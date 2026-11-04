@@ -32,7 +32,8 @@ try:  # mcp >= 2.0
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server
 
-from .data import DIRECTORIES, FOOTPRINTS, OUTREACH_TEMPLATES
+from .countries import COUNTRIES, country_name, format_phone, region_matches, resolve_country
+from .data import CATEGORY_HINTS, DIRECTORIES, FOOTPRINTS, NICHE_TAGS, OUTREACH_TEMPLATES
 
 mcp = _Server(
     "backlink-builder",
@@ -51,6 +52,8 @@ UA = "BacklinkBuilderMCP/1.0 (+site audit)"
 DATA_DIR = Path(os.environ.get("BACKLINK_MCP_DATA", Path.home() / ".backlink-mcp"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TRACKER = DATA_DIR / "tracker.json"
+PROJECTS = DATA_DIR / "projects.json"
+CUSTOM = DATA_DIR / "custom.json"
 CACHE = DATA_DIR / "scans"
 CACHE.mkdir(exist_ok=True)
 
@@ -89,7 +92,7 @@ BOT_WALLED = ("linkedin.com", "instagram.com", "facebook.com", "x.com", "twitter
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/130.0 Safari/537.36")
 BROWSER_HEADERS = {"User-Agent": BROWSER_UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                   "Accept-Language": "en-IN,en;q=0.9"}
+                   "Accept-Language": "en;q=0.9,*;q=0.5"}
 
 
 def _clean_emails(emails) -> list[str]:
@@ -157,6 +160,49 @@ def _load(path: Path, default):
 
 def _save(path: Path, data) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
+
+
+# ----------------------------------------------------------------- user data: custom.json + projects
+def _custom() -> dict:
+    """~/.backlink-mcp/custom.json - your own directories, footprints, templates and category hints.
+    Merged with the built-ins at call time, so package updates never overwrite them."""
+    c = _load(CUSTOM, {}) or {}
+    return c if isinstance(c, dict) else {}
+
+
+def _all_directories() -> list[dict]:
+    seen, out = set(), []
+    for d in (_custom().get("directories") or []) + DIRECTORIES:  # custom first: yours win on name clash
+        if isinstance(d, dict) and d.get("name") and d.get("url") and d["name"].lower() not in seen:
+            seen.add(d["name"].lower())
+            out.append({"tags": ["general"], "region": "global", "priority": 3, "notes": "", **d})
+    return out
+
+
+def _all_footprints() -> dict[str, list[str]]:
+    fp = {k: list(v) for k, v in FOOTPRINTS.items()}
+    for group, qs in (_custom().get("footprints") or {}).items():
+        fp.setdefault(group, [])
+        fp[group] = list(qs) + [q for q in fp[group] if q not in qs]
+    return fp
+
+
+def _all_templates() -> dict:
+    return {**OUTREACH_TEMPLATES, **(_custom().get("outreach_templates") or {})}
+
+
+def _all_category_hints() -> list:
+    extra = [(tuple(h[0]) if isinstance(h[0], list) else (h[0],), h[1]) for h in (_custom().get("category_hints") or [])
+             if isinstance(h, list) and len(h) == 2]
+    return extra + CATEGORY_HINTS
+
+
+def _projects() -> dict:
+    return _load(PROJECTS, {}) or {}
+
+
+def _project(site: str | None) -> dict:
+    return _projects().get(_domain(site), {}) if site else {}
 
 
 def _jsonld(soup: BeautifulSoup) -> list[dict]:
@@ -335,6 +381,14 @@ async def scan_site(url: str, max_pages: int = 30) -> dict:
     data = await _crawl(url, max(1, min(max_pages, 200)))
     profile = _profile_from_pages(data["pages"], data["domain"])
     _save(CACHE / f"{data['domain']}.json", {**data, "profile": profile})
+    projects = _projects()
+    if data["domain"] not in projects:  # remember the site; save_project fills in niche/location/country
+        country = resolve_country((profile.get("address") or {}).get("addressCountry"))
+        projects[data["domain"]] = {"site": data["domain"], "name": profile.get("name"),
+                                    "keywords": profile.get("keywords", [])[:6], "country": country,
+                                    "location": (profile.get("address") or {}).get("addressLocality"),
+                                    "created": _now(), "updated": _now(), "auto": True}
+        _save(PROJECTS, projects)
     dom = data["domain"]
     ext = Counter(_domain(l["href"]) for p in data["pages"].values() for l in p["links"] if _domain(l["href"]) != dom)
     return {
@@ -352,7 +406,8 @@ async def scan_site(url: str, max_pages: int = 30) -> dict:
         "profiles_linked_from_site": sorted({d for d in ext if any(s in d for s in (
             "linkedin", "facebook", "instagram", "twitter", "x.com", "youtube", "github", "justdial",
             "indiamart", "clutch", "goodfirms", "google", "behance", "dribbble"))}),
-        "next": "Run seo_link_audit, then find_opportunities.",
+        "project": _project(data["domain"]),
+        "next": "Run save_project (niche, location, country) if not done, then seo_link_audit and find_opportunities.",
     }
 
 
@@ -591,48 +646,111 @@ def internal_link_suggestions(domain: str, limit: int = 20) -> list[dict]:
 
 # ----------------------------------------------------------------- tools: opportunities
 @mcp.tool()
-def find_opportunities(niche: str, location: str = "", country: str = "IN",
-                       keywords: list[str] | None = None, competitors: list[str] | None = None) -> dict:
-    """Return legit backlink opportunities for a business: matching citation/directory/profile sites
-    (filtered by niche & country) plus ready-to-run web-search footprint queries for guest posts,
-    resource pages, local news, partners and unlinked mentions. Run the queries with web search.
-    niche examples: software, it-services, saas, manufacturing, restaurant, salon, hotel, healthcare, education."""
-    n = niche.lower()
-    tagmap = {"software": ["software", "it", "saas", "agency"], "it": ["it", "software", "agency"],
-              "saas": ["saas", "software"], "erp": ["software", "saas", "it"], "web": ["agency", "it", "design"],
-              "manufactur": ["manufacturing", "b2b"], "industrial": ["manufacturing", "b2b"], "pharma": ["manufacturing", "b2b"],
-              "restaurant": ["food", "local"], "cafe": ["food", "local"], "salon": ["beauty", "local"],
-              "spa": ["beauty", "local"], "hotel": ["hospitality", "local"], "resort": ["hospitality", "local"],
-              "clinic": ["healthcare", "local"], "doctor": ["healthcare", "local"], "school": ["education", "local"],
-              "design": ["design", "agency"], "startup": ["startup"]}
-    tags = {"general"} | {t for k, ts in tagmap.items() if k in n for t in ts}
+def save_project(site: str, niche: str = "", location: str = "", country: str = "",
+                 keywords: list[str] | None = None, competitors: list[str] | None = None,
+                 business_name: str = "", notes: str = "") -> dict:
+    """Save (or update) a site you're working on - your own or a client's - so every other tool knows its
+    niche, location, country, keywords and competitors. Only the fields you pass are changed.
+    country: name or code ("India", "IN", "UK", "United States"...)."""
+    dom = _domain(site)
+    projects = _projects()
+    pr = projects.get(dom, {"site": dom, "created": _now()})
+    code = resolve_country(country) if country else None
+    if country and not code:
+        return {"ok": False, "msg": f"Unknown country {country!r}. Use a name or ISO code, e.g. India/IN, UK/GB, US.",
+                "known": sorted(COUNTRIES)}
+    for k, v in (("niche", niche), ("location", location), ("country", code), ("keywords", keywords),
+                 ("competitors", [_domain(c) for c in competitors] if competitors else None),
+                 ("name", business_name), ("notes", notes)):
+        if v:
+            pr[k] = v
+    pr.pop("auto", None)
+    pr["updated"] = _now()
+    projects[dom] = pr
+    _save(PROJECTS, projects)
+    return {"ok": True, "project": pr}
+
+
+@mcp.tool()
+def list_projects() -> dict:
+    """List every site you've scanned or saved, with niche, location, country and tracker progress."""
+    tr = _load(TRACKER, [])
+    out = []
+    for dom, pr in sorted(_projects().items()):
+        st = Counter(e["status"] for e in tr if e.get("site") == dom)
+        out.append({**pr, "tracker": dict(st), "kit_saved": (DATA_DIR / f"submission_kit_{dom}.json").exists()})
+    return {"count": len(out), "projects": out, "data_folder": str(DATA_DIR)}
+
+
+def _niche_tags(niche: str) -> set[str]:
+    n = f" {niche.lower()} "
+    return {t for k, ts in NICHE_TAGS.items() if k in n for t in ts}
+
+
+@mcp.tool()
+def find_opportunities(niche: str = "", location: str = "", country: str = "",
+                       keywords: list[str] | None = None, competitors: list[str] | None = None,
+                       site: str = "") -> dict:
+    """Return legit backlink opportunities for ANY business in ANY country: matching citation/directory/profile
+    sites (filtered by niche and country) plus ready-to-run web-search footprint queries (roundups, local lists,
+    guest posts, resource pages, podcasts, partners, competitor mentions). Run the queries with web search.
+    Pass site= to use a saved project's niche/location/country/keywords/competitors (anything you pass wins).
+    niche examples: software, saas, digital marketing, manufacturing, restaurant, salon, gym, hotel, dental clinic,
+    law firm, real estate, plumber, interior design, school, online store, wedding photographer, charity.
+    country: name or code (India, US, UK, UAE, Australia, Germany...)."""
+    pr = _project(site)
+    niche = niche or pr.get("niche") or ""
+    location = location or pr.get("location") or ""
+    code = resolve_country(country) or pr.get("country")
+    if country and not resolve_country(country):
+        return {"error": f"Unknown country {country!r}. Use a name or ISO code (India/IN, UK/GB, US, UAE/AE...)."}
+    keywords = keywords or pr.get("keywords") or ([niche] if niche else [])
+    competitors = competitors or pr.get("competitors") or []
+    if not niche and not keywords:
+        return {"error": "Tell me the niche (e.g. 'dental clinic', 'software', 'restaurant'), or pass site= for a saved project."}
+    tags = {"general"} | _niche_tags(niche + " " + " ".join(keywords))
     if location:
         tags.add("local")
-    picks = [d for d in DIRECTORIES
-             if (set(d["tags"]) & tags) and (d["region"] in ("global", country.upper()))]
-    picks.sort(key=lambda d: (-d["priority"], d["name"]))
-    kw = keywords or [niche]
-    loc = location or ""
+    picks = [d for d in _all_directories() if set(d["tags"]) & tags and region_matches(d["region"], code)
+             and (not d.get("location") or (location and d["location"].lower() in location.lower()))]
+    # rank: priority, +1 when the directory is specific to this niche (not just general/local), niche-specific first on ties
+    niche_tags = tags - {"general", "local"}
+    for d in picks:
+        d["_specific"] = bool(set(d["tags"]) & niche_tags)
+    picks.sort(key=lambda d: (-(d["priority"] + d["_specific"]), not d["_specific"], -d["priority"], d["name"]))
+    picks = [{k: v for k, v in d.items() if k != "_specific"} | {"why": "niche" if d["_specific"] else "general"} for d in picks]
+    cname = country_name(code) if code else ""
+    kw = [k for k in keywords if k] or [niche]
     queries = []
-    for group, tmpls in FOOTPRINTS.items():
+    for group, tmpls in _all_footprints().items():
         for t in tmpls:
-            if "{loc}" in t and not loc:
+            if ("{loc}" in t and not location) or ("{country}" in t and not cname):
                 continue
             for k in (kw[:3] if "{kw}" in t else kw[:1]):
-                queries.append({"type": group, "query": t.format(kw=k, loc=loc).strip()})
+                q = " ".join(t.format(kw=k, loc=location, country=cname).split())
+                queries.append({"type": group, "query": q})
     seen, uniq = set(), []
     for q in queries:
-        if q["query"] not in seen:
-            seen.add(q["query"])
+        if q["query"].lower() not in seen:
+            seen.add(q["query"].lower())
             uniq.append(q)
     comp = []
-    for c in competitors or []:
+    for c in competitors:
         cd = _domain(c)
         comp += [{"type": "competitor_mentions", "query": f'"{cd}" -site:{cd}'},
                  {"type": "competitor_profiles", "query": f'"{cd}" (directory OR listing OR profile OR review)'}]
+    notes = []
+    if not code:
+        notes.append("No country set - only global directories are shown. Pass country= (or save_project) for local ones.")
+    if tags == {"general"} or tags == {"general", "local"}:
+        notes.append(f"Niche {niche!r} didn't match a known category - showing general directories. "
+                     "Try a common word (e.g. 'dentist', 'lawyer', 'software'), or add your own with add_custom_directory.")
     return {
+        "used": {"niche": niche, "location": location, "country": cname or None, "keywords": kw,
+                 "competitors": competitors, "matched_tags": sorted(tags)},
+        "notes": notes,
         "citations_and_directories": picks,
-        "search_footprints": uniq[:60] + comp,
+        "search_footprints": uniq[:70] + comp,
         "how_to_use": [
             "Claim high-priority citations first (Google Business Profile, Bing Places, then niche directories).",
             "Use the exact same Name/Address/Phone everywhere (see build_submission_kit).",
@@ -642,6 +760,46 @@ def find_opportunities(niche: str, location: str = "", country: str = "IN",
             "Aim for relevance over volume: 10 relevant links beat 200 junk ones.",
         ],
     }
+
+
+@mcp.tool()
+def add_custom_directory(name: str, url: str, tags: list[str], region: str = "global", priority: int = 3,
+                         notes: str = "", location: str = "") -> dict:
+    """Add your own directory/citation site so find_opportunities includes it from now on (saved to
+    ~/.backlink-mcp/custom.json, survives updates). tags = niches it suits, e.g. ["legal", "local"] (see
+    NICHE_TAGS in data.py); region = "global", a country (name or code) or a region (EU, GCC, ANZ, NA, SEA).
+    location = optional city/area; if set, it only shows for projects in that location (e.g. a city chamber)."""
+    reg = region if region.upper() in ("GLOBAL", "EU", "EUROPE", "GCC", "ANZ", "NA", "SEA", "SOUTH_ASIA") else resolve_country(region)
+    if not reg:
+        return {"ok": False, "msg": f"Unknown region {region!r}."}
+    if not url.startswith("http"):
+        return {"ok": False, "msg": "url must start with http(s)://"}
+    c = _custom()
+    dirs = [d for d in (c.get("directories") or []) if d.get("name", "").lower() != name.lower()]
+    entry = {"name": name, "url": url, "tags": [t.lower() for t in tags] or ["general"], "region": reg.lower() if reg.upper() == "GLOBAL" else reg.upper(),
+             "priority": max(1, min(5, priority)), "notes": notes}
+    if location:
+        entry["location"] = location
+    dirs.append(entry)
+    c["directories"] = dirs
+    _save(CUSTOM, c)
+    return {"ok": True, "added": entry, "file": str(CUSTOM), "custom_directories": len(dirs)}
+
+
+@mcp.tool()
+def add_custom_footprint(group: str, query: str) -> dict:
+    """Add your own search footprint (saved to custom.json). Use {kw} for keyword, {loc} for city/area and
+    {country} for the country name, e.g. group "local", query '{loc} {kw} association members'."""
+    if not re.search(r"\{(kw|loc|country)\}", query) and len(query.split()) < 2:
+        return {"ok": False, "msg": "Query looks too short - use {kw}, {loc} or {country} placeholders."}
+    c = _custom()
+    fp = c.get("footprints") or {}
+    fp.setdefault(group, [])
+    if query not in fp[group]:
+        fp[group].append(query)
+    c["footprints"] = fp
+    _save(CUSTOM, c)
+    return {"ok": True, "group": group, "queries": fp[group], "file": str(CUSTOM)}
 
 
 SPAM_LINK_RE = re.compile(r"\b(casino|poker|slot[s-]?|betting|bet365|1xbet|viagra|cialis|payday|escort|porn|"
@@ -663,7 +821,11 @@ async def qualify_prospect(url: str, my_domain: str = "", topic_keywords: list[s
     """Fetch a prospect page and score it 0-100. Detects guest-post pages, roundup/"top N companies" lists
     (ask to be included), resource pages and directories; checks noindex, outbound spam links and sponsored-only
     policies; follows the site's contact/about/write-for-us pages to find real contact emails; and says which
-    outreach template to use. topic_keywords (e.g. ["erp", "software"]) raises the score for relevant pages."""
+    outreach template to use. topic_keywords (e.g. ["dentist", "dental"]) raises the score for relevant pages;
+    if omitted, the saved project's keywords for my_domain are used."""
+    if not topic_keywords and my_domain:
+        pr = _project(my_domain)
+        topic_keywords = [w for k in (pr.get("keywords") or []) for w in [k]] + ([pr["niche"]] if pr.get("niche") else [])
     async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
         r = await _fetch(c, url)
         if isinstance(r, Exception):
@@ -749,21 +911,6 @@ async def qualify_prospect(url: str, my_domain: str = "", topic_keywords: list[s
     }
 
 
-CATEGORY_HINTS = [  # (keyword in site text, directory-style category)
-    (("erp", "crm", "hrms", "saas", "software development", "custom software", "web development", "app development"),
-     "Software Company"),
-    (("it services", "it company", "it solutions"), "IT Services"),
-    (("digital marketing", "seo agency", "social media marketing"), "Digital Marketing Agency"),
-    (("web design", "ui design", "ux design", "branding"), "Web Design Agency"),
-    (("manufactur", "machining", "fabrication", "industrial equipment", "autoclave", "pharma machinery"), "Manufacturer"),
-    (("restaurant", "cafe", "dining", "biryani"), "Restaurant"),
-    (("salon", "spa", "beauty", "hair"), "Beauty Salon"),
-    (("resort", "farm stay", "hotel", "homestay"), "Resort"),
-    (("clinic", "hospital", "dental", "doctor"), "Medical Clinic"),
-    (("school", "academy", "coaching", "institute", "training"), "Educational Institution"),
-]
-
-
 _DANGLING = {"a", "an", "the", "and", "or", "for", "of", "to", "in", "with", "on", "at", "by", "from", "our", "your"}
 ACRONYMS = {"erp", "crm", "hrms", "hr", "it", "ai", "ml", "seo", "ui", "ux", "api", "saas", "b2b", "iot", "plc", "amc",
             "pos", "cms", "lms", "gst", "mis", "ios", "qa", "msme"}
@@ -790,7 +937,7 @@ def _smart_title(phrase: str) -> str:
 
 def _guess_category(profile: dict, extra_text: str = "") -> str | None:
     txt = " ".join([*(profile.get("keywords") or []), profile.get("description") or "", extra_text]).lower()
-    for keys, cat in CATEGORY_HINTS:
+    for keys, cat in _all_category_hints():
         if any(k in txt for k in keys):
             return cat
     return None
@@ -804,7 +951,7 @@ def _join(items: list[str]) -> str:
 @mcp.tool()
 def build_submission_kit(domain: str, business_name: str = "", category: str = "", phone: str = "",
                          email: str = "", address: str = "", city: str = "", state: str = "",
-                         postal_code: str = "", country: str = "India", founded: str = "",
+                         postal_code: str = "", country: str = "", founded: str = "",
                          services: list[str] | None = None, socials: list[str] | None = None,
                          description: str = "", save: bool = True) -> dict:
     """Build one consistent Name/Address/Phone + descriptions kit for directory/citation sign-ups. Merges the
@@ -813,8 +960,12 @@ def build_submission_kit(domain: str, business_name: str = "", category: str = "
     generate_schema reuses it."""
     d = _load(CACHE / f"{_domain(domain)}.json", {}) or {}
     pr = d.get("profile", {}) or {}
+    proj = _project(domain)
     a = pr.get("address") or {}
     rejected = {}
+    if country and not resolve_country(country):
+        rejected["country"] = country
+        country = ""
 
     def pick(field: str, given, fallback=None):
         if isinstance(given, list):
@@ -829,7 +980,7 @@ def build_submission_kit(domain: str, business_name: str = "", category: str = "
             fallback = None
         return given or fallback
 
-    name = pick("business_name", business_name, pr.get("name"))
+    name = pick("business_name", business_name, proj.get("name") or pr.get("name"))
     brand = _brand_words(name, _domain(domain))
     svc_default = []
     for k in (pr.get("keywords") or []):
@@ -844,14 +995,14 @@ def build_submission_kit(domain: str, business_name: str = "", category: str = "
     kit = {
         "business_name": name,
         "website": pr.get("website") or f"https://{_domain(domain)}",
-        "category": pick("category", category, _guess_category(pr, " ".join(services or []))),
+        "category": pick("category", category, _guess_category(pr, " ".join([*(services or []), proj.get("niche") or ""]))),
         "phone": pick("phone", phone, pr.get("phone")),
         "email": pick("email", email, pr.get("email")),
         "street_address": pick("address", address, a.get("streetAddress")),
-        "city": pick("city", city, a.get("addressLocality")),
+        "city": pick("city", city, a.get("addressLocality") or proj.get("location")),
         "state": pick("state", state, a.get("addressRegion")),
         "postal_code": pick("postal_code", postal_code, a.get("postalCode")),
-        "country": pick("country", country, a.get("addressCountry")),
+        "country": country_name(pick("country", country, a.get("addressCountry") or proj.get("country"))) or None,
         "founded": pick("founded", founded),
         "services": pick("services", services, svc_default),
         "social_profiles": pick("socials", socials, pr.get("same_as") or []),
@@ -860,25 +1011,24 @@ def build_submission_kit(domain: str, business_name: str = "", category: str = "
     if kit["category"] and set(kit["category"].lower().split()) <= brand:
         rejected["category"] = kit["category"]
         kit["category"] = _guess_category(pr)
-    digits = re.sub(r"\D", "", kit["phone"] or "")
     if kit["phone"]:
-        if len(digits) == 10 and (kit["country"] or "").lower() in ("india", "in"):
-            digits = "91" + digits
-        kit["phone_e164"] = "+" + digits
-        if digits.startswith("91") and len(digits) == 12:
-            kit["phone"] = f"+91 {digits[2:7]} {digits[7:]}"  # one display format, used everywhere
+        # one display format used everywhere + E.164 for schema; works for any country
+        kit["phone"], kit["phone_e164"] = format_phone(kit["phone"], kit["country"])
 
     base = pick("description", description, pr.get("description")) or ""
     svc = kit["services"] or []
     where = f" in {kit['city']}" if kit["city"] else ""
     cat = (kit["category"] or "company").lower()
-    intro = f"{kit['business_name']} is a {cat}{where}" + (f" that builds {_join(svc[:4])}." if svc else ".")
+    intro = f"{kit['business_name']} is a {cat}{where}" + (f" offering {_join(svc[:4])}." if svc else ".")
     long_parts = [base or intro]
     if base:  # description already introduces the business; add the concrete details after it
-        long_parts.append((f"Based{where}, we build " if where else "We build ") + _join(svc[:4]) + "." if svc else
-                          (f"We are based{where}." if where else ""))
+        city_known = bool(kit["city"]) and kit["city"].lower() in base.lower()
+        if svc:
+            long_parts.append((f"Based{where}, we offer " if where and not city_known else "We offer ") + _join(svc[:4]) + ".")
+        elif where and not city_known:
+            long_parts.append(f"We are based{where}.")
     if kit["founded"]:
-        long_parts.append(f"Founded in {kit['founded']}, we work with businesses across {kit['country'] or 'India'}.")
+        long_parts.append(f"Founded in {kit['founded']}" + (f", we serve clients across {country_name(kit['country'], article=True)}." if kit["country"] else "."))
     if len(svc) > 4:
         long_parts.append(f"We also offer {_join(svc[4:7])}.")
     kit["descriptions"] = {
@@ -887,13 +1037,14 @@ def build_submission_kit(domain: str, business_name: str = "", category: str = "
         "long_750": _cut(" ".join(x for x in long_parts if x), 750),
     }
     required = {"business_name": "Business name", "category": "Category", "phone": "Phone", "email": "Email",
-                "street_address": "Street address", "city": "City", "postal_code": "PIN / postal code"}
+                "street_address": "Street address", "city": "City", "postal_code": "Postal / ZIP / PIN code",
+                "country": "Country"}
     missing = [label for k, label in required.items() if not kit.get(k)]
     needs_review = []
     if missing:
         needs_review.append(f"Missing: {', '.join(missing)}.")
     if not kit["street_address"]:
-        needs_review.append("No street address - Google Business Profile, Justdial and most citations need one. "
+        needs_review.append("No street address - Google Business Profile and most local directories need one. "
                             "Use your registered office address and show the same address on your website's contact page.")
     if rejected:
         needs_review.append(f"Ignored placeholder values: {rejected} - pass your real details.")
@@ -958,7 +1109,7 @@ def generate_schema(domain: str, business_type: str = "ProfessionalService", are
             schema[k] = v
     addr = {k: v for k, v in (("streetAddress", kit.get("street_address")), ("addressLocality", kit.get("city")),
                               ("addressRegion", kit.get("state")), ("postalCode", kit.get("postal_code")),
-                              ("addressCountry", "IN" if (kit.get("country") or "").lower() in ("india", "in") else kit.get("country")))
+                              ("addressCountry", resolve_country(kit.get("country")) or kit.get("country")))
             if v and not _is_placeholder(v)}
     if addr:
         schema["address"] = {"@type": "PostalAddress", **addr}
@@ -985,15 +1136,16 @@ def draft_outreach(template: str, my_site: str, my_name: str, target_site: str =
     """Draft an outreach email to edit and send yourself (never sends anything).
     template: guest_post | list_inclusion (for "top N companies" roundups) | resource_page | broken_link |
     unlinked_mention | partner | testimonial | local_press.
-    topic: a noun phrase, e.g. "choosing an ERP for a small factory" or "Nashik startup opens AI lab".
-    proof: real facts only, e.g. ["Built ERP for 3 Nashik manufacturers", "Founded 2025"].
+    topic: a noun phrase, e.g. "how to choose a family dentist" or "local bakery wins state award".
+    proof: real facts only, e.g. ["Served 200+ local families since 2019", "4.9 stars from 120 Google reviews"].
     hook: ONE specific sentence about their page so it doesn't read as a mass email.
     Returns warnings when something required is missing - fix them before sending."""
-    t = OUTREACH_TEMPLATES.get(template)
+    templates = _all_templates()
+    t = templates.get(template)
     if not t:
-        return {"error": f"Unknown template. Use one of: {', '.join(OUTREACH_TEMPLATES)}"}
+        return {"error": f"Unknown template. Use one of: {', '.join(templates)}"}
     given = {"topic": topic, "my_page": my_page, "broken_url": broken_url, "proof": proof}
-    warnings = [f"'{k}' is needed for {template} - pass it (see the tool description)." for k in t["needs"] if not given.get(k)]
+    warnings = [f"'{k}' is needed for {template} - pass it (see the tool description)." for k in t.get("needs", []) if not given.get(k)]
     for k, v in {"topic": topic, "contact_name": contact_name, "target_site": target_site, "hook": hook,
                  "my_page": my_page}.items():
         if v and _is_placeholder(v):

@@ -1,8 +1,13 @@
 # Ady's Backlinks MCP
 
-An MCP server that lets **Claude** scan your website (or its code) and help you build **real backlinks**.
-It finds directories to list on, finds sites to pitch, writes your outreach emails, checks your links
-are live, and tracks everything.
+An MCP server that lets **Claude** scan a website (or its code) and help build **real backlinks**.
+It finds directories to list on, finds sites to pitch, writes the outreach emails, checks links are
+live, and tracks everything.
+
+**Works for any business, in any country, and for as many sites as you like:** your own site and
+all your clients' sites, each saved as its own project. A dentist in Austin, a plumber in Manchester,
+a software company in Nashik and a real estate agency in Dubai each get their own local directories,
+search queries, phone format and schema.
 
 > **No spam.** It never auto-posts links (no comment spam, forum spam, PBNs or paid link farms).
 > Google penalises those. It finds the right places and prepares everything; you submit and send.
@@ -12,6 +17,7 @@ are live, and tracks everything.
 ## Contents
 
 - [What it can do](#what-it-can-do)
+- [Works for any business and country](#works-for-any-business-and-country)
 - [Quick install (1 command)](#quick-install-1-command)
 - [Manual install](#manual-install)
 - [Connect it to your app](#connect-it-to-your-app)
@@ -22,8 +28,9 @@ are live, and tracks everything.
 - [Check it works](#check-it-works)
 - [How to use it (copy-paste prompts)](#how-to-use-it-copy-paste-prompts)
 - [All tools](#all-tools)
+- [Multiple sites and clients](#multiple-sites-and-clients)
 - [Where your data is saved](#where-your-data-is-saved)
-- [Customise](#customise)
+- [Add your own directories and queries](#add-your-own-directories-and-queries)
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 
@@ -44,9 +51,42 @@ are live, and tracks everything.
  7. VERIFY    →  is the link really there? follow or nofollow? still live next month?
 ```
 
-Comes with about 50 curated sites (India + global): Google Business Profile, Bing Places, Justdial,
-IndiaMART, Sulekha, TradeIndia, Startup India, Clutch, GoodFirms, DesignRush, G2, Capterra,
-Product Hunt, Zomato, Practo, Tripadvisor and more. They're filtered by your niche.
+---
+
+## Works for any business and country
+
+**About 135 built-in directories**, picked automatically for the niche and country:
+
+| Type | Examples |
+|---|---|
+| Every business | Google Business Profile, Bing Places, Apple Business Connect, LinkedIn, Facebook, Trustpilot, Hotfrog |
+| Local directories | **US** BBB, Yellow Pages, Manta · **UK** Yell, Thomson Local, FreeIndex · **CA** YellowPages.ca · **AU** Yellow Pages, True Local · **NZ** Finda · **IN** Justdial, Sulekha · **AE** Yellow Pages UAE · **DE** Gelbe Seiten, Das Örtliche · **FR** PagesJaunes · **ES** Páginas Amarillas · **IT** PagineGialle · **ZA** Brabys |
+| Software, IT and agencies | Clutch, GoodFirms, DesignRush, G2, Capterra, Product Hunt, GitHub, Wellfound |
+| Trades and home services | Checkatrade, TrustATrader (UK) · Angi, Thumbtack (US) · HomeStars (CA) · hipages (AU) · Houzz Pro, Bark |
+| Healthcare | Zocdoc, Healthgrades (US) · Practo (IN) · RateMDs |
+| Legal | Avvo, Justia, FindLaw (US) · Law Society (UK) · LawRato (IN) |
+| Real estate | Zillow, Realtor.com (US) · Rightmove, Zoopla (UK) · realestate.com.au · Bayut, Property Finder (UAE) · 99acres, MagicBricks (IN) |
+| Restaurants and food | Tripadvisor, OpenTable, Uber Eats, Yelp, DoorDash, Deliveroo, TheFork, Talabat, Zomato, Swiggy |
+| Hotels and stays | Booking.com, Airbnb, MakeMyTrip |
+| Beauty and fitness | Fresha, Booksy, Treatwell, Vagaro, Mindbody, ClassPass |
+| Manufacturing / B2B | Kompass, Europages, Wer liefert was, Thomasnet, IndiaMART, TradeIndia, Alibaba |
+| Education, events, nonprofits | Niche, GreatSchools, The Knot, Hitched, WedMeGood, Candid, GlobalGiving |
+
+**Niches it understands:** software, SaaS, IT, web/app development, marketing/SEO agency, design,
+startup, manufacturing, industrial, pharma, wholesale, restaurant, cafe, bakery, catering, salon, spa,
+barber, gym, yoga, hotel, resort, travel, clinic, dentist, physio, lawyer/solicitor, real estate,
+plumber, electrician, contractor, builder, roofer, cleaner, interior design, architect, HVAC,
+landscaping, school, coaching, tutor, online store, wedding, events, photographer, accountant, tax,
+insurance, car repair, charity/NGO. Something not on the list still works; you just get general
+directories plus anything you add yourself.
+
+**Countries:** India, US, Canada, UK, Ireland, Australia, New Zealand, UAE, Saudi Arabia, Qatar,
+Singapore, Malaysia, Philippines, Indonesia, Thailand, Vietnam, Japan, Pakistan, Bangladesh,
+Sri Lanka, Nepal, Germany, France, Spain, Italy, Netherlands, Belgium, Switzerland, Sweden, Poland,
+Portugal, South Africa, Nigeria, Kenya, Egypt, Brazil and Mexico. You can type names or codes:
+`UK`, `GB`, `United Kingdom`, `UAE`, `USA`, `India`, `IN`. Each country gets the right local
+directories, search queries, phone format (`+44 161 496 0123`) and schema country code. Adding a
+country takes one line in `backlink_mcp/countries.py`.
 
 ---
 
@@ -239,7 +279,7 @@ You should get your business name, pages and keywords back.
 npx @modelcontextprotocol/inspector ~/adys-backlinks-mcp/.venv/bin/backlink-mcp
 ```
 
-Click **Connect**, then **Tools → List Tools**. You should see **14 tools**. Run `scan_site` to test.
+Click **Connect**, then **Tools → List Tools**. You should see **18 tools**. Run `scan_site` to test.
 
 **Option C: quick terminal check**
 
@@ -253,59 +293,86 @@ If it just sits there waiting, it's working (it's listening for an MCP client). 
 
 ## How to use it (copy-paste prompts)
 
-Send these to Claude **one at a time**, in order. Change `yoursite.com`, the niche, the city and the paths to yours.
+Send these to Claude **one at a time**, in order. Replace the example values with the real site's
+details. Works the same for your own site or a client's.
 
-> **Golden rule:** give Claude your **real** details. The tool rejects placeholders like `XXXXXXXXXX`,
+> **Golden rule:** give Claude **real** details. The tool rejects placeholders like `XXXXXXXXXX`,
 > `20XX` or `your full address`, because one wrong phone number copied to 20 directories is worse than none.
 
-**1. Scan and audit**
+**1. Save the site as a project** (once per site)
 ```
-Use backlinks to scan https://yoursite.com (max 50 pages), then run seo_link_audit and internal_link_suggestions. Show me the priority_fixes list.
+Use backlinks save_project for example.com with niche "dental clinic", location "Austin", country "US", keywords ["dentist", "family dentist", "teeth whitening"], competitors ["competitor1.com", "competitor2.com"].
+```
+After this, every other tool remembers the niche, city, country and keywords. Just mention the site.
+
+**2. Scan and audit**
+```
+Use backlinks to scan https://example.com (max 50 pages), then run seo_link_audit and internal_link_suggestions. Show me the priority_fixes list.
 ```
 
-**2. Check your code (optional)**
+**3. Check the code (optional, if you have it)**
 ```
-Use backlinks scan_codebase on /Users/you/path/to/your-site and tell me exactly which files to change for each priority fix.
-```
-
-**3. Make your submission kit** (real details only)
-```
-Use backlinks build_submission_kit for yoursite.com with business_name "Your Company", city "Your City", state "Your State", postal_code "000000", address "Your street address", email "you@yoursite.com", phone "+91 98xxxxxxxx", founded "2025", services ["Service 1", "Service 2", "Service 3"]. Show me needs_review.
-```
-Leave out anything you don't know yet. The kit will list it under `needs_review`.
-
-**4. Add business schema to your site**
-```
-Use backlinks generate_schema for yoursite.com and add the script tag to my site's <head>.
+Use backlinks scan_codebase on /path/to/the/website/code and tell me exactly which files to change for each priority fix.
 ```
 
-**5. Find where to get links**
+**4. Make the submission kit** (real details only)
 ```
-Use backlinks find_opportunities for niche "software erp", location "Your City", country "IN", keywords ["erp software", "custom software development"]. Give me the top 15 directories to sign up on first, with links.
+Use backlinks build_submission_kit for example.com with business_name "Example Dental", address "1200 Congress Ave", postal_code "78701", state "TX", email "hello@example.com", phone "(512) 555-0142", founded "2016", services ["Family Dentistry", "Teeth Whitening", "Dental Implants"], description "One or two sentences in your own words.". Show me needs_review.
 ```
-Now sign up on those directories, copy-pasting from the kit. **This is the fastest way to get your first links.**
+Leave out anything you don't know yet. The kit will list it under `needs_review`. City and country come from the project.
 
-**6. Find real sites to pitch**
+**5. Add business schema to the site**
 ```
-Run the roundups_and_lists and local search footprints with web search. Run qualify_prospect on the top 15 results with my_domain yoursite.com and topic_keywords ["erp", "software"]. Add the "good" ones to the tracker. List any "check_manually" ones separately.
+Use backlinks generate_schema for example.com with business_type "Dentist" and add the script tag to the site's <head>.
+```
+Common types: `ProfessionalService`, `LocalBusiness`, `Dentist`, `Physician`, `LegalService`, `Attorney`,
+`RealEstateAgent`, `Plumber`, `Electrician`, `GeneralContractor`, `Restaurant`, `CafeOrCoffeeShop`,
+`Bakery`, `BeautySalon`, `HealthClub`, `Hotel`, `Store`, `AutoRepair`, `AccountingService`,
+`EducationalOrganization`, `NGO`. The full list is on [schema.org/LocalBusiness](https://schema.org/LocalBusiness).
+
+**6. Find where to get links**
+```
+Use backlinks find_opportunities for example.com. Give me the top 15 directories to sign up on first, with links.
+```
+Now sign up on those directories, copy-pasting from the kit. **This is the fastest way to get the first links.**
+
+**7. Find real sites to pitch**
+```
+Run the roundups_and_lists and local search footprints for example.com with web search. Run qualify_prospect on the top 15 results with my_domain example.com. Add the "good" ones to the tracker. List any "check_manually" ones separately.
 ```
 
-**7. Write the emails**
+**8. Write the emails**
 ```
-For each good prospect, use draft_outreach with its recommended_template, my_site yoursite.com, my_name YourName, a one-line hook about their page, and proof from these real facts: ["fact 1", "fact 2"]. Show me any warnings.
+For each good prospect, use draft_outreach with its recommended_template, my_site example.com, my_name "Your Name", a one-line hook about their page, and proof from these real facts: ["fact 1", "fact 2"]. Show me any warnings.
 ```
-Only put **true** facts in `proof` (clients served, years in business, real results). Skip prospects whose
-template is `signup`: those are just profile sign-ups, no email needed.
+Only put **true** facts in `proof` (customers served, years in business, reviews, awards). Skip
+prospects whose template is `signup`: those are just profile sign-ups, no email needed.
 
 **Anytime later**
 ```
-show my backlink tracker
-I got listed on https://example.com/our-profile, verify it and mark it live
-recheck my live links for yoursite.com          ← do this once a month
+list my backlink projects
+show my backlink tracker for example.com
+I got listed on https://somesite.com/our-profile, verify it for example.com and mark it live
+recheck my live links for example.com          ← do this once a month
 ```
 
-**Niche names that work well:** `software`, `it-services`, `saas`, `erp`, `web design`, `manufacturing`,
-`pharma`, `industrial`, `restaurant`, `cafe`, `salon`, `spa`, `hotel`, `resort`, `clinic`, `school`, `startup`.
+---
+
+## Multiple sites and clients
+
+Every site is its own **project**, so one install handles your site and every client's:
+
+```
+Use backlinks save_project for client-one.com with niche "law firm", location "Leeds", country "UK"
+Use backlinks save_project for client-two.com with niche "restaurant", location "Pune", country "India"
+list my backlink projects
+```
+
+- `scan_site` creates a project automatically the first time a site is scanned. Run `save_project`
+  to add the niche, location and country.
+- Each project has its own scan, submission kit, schema and tracker entries.
+- `list_projects` shows every site with its tracker progress (todo / submitted / live).
+- When working on a client, always mention their domain so the tools use the right project.
 
 ---
 
@@ -317,7 +384,11 @@ recheck my live links for yoursite.com          ← do this once a month
 | `scan_codebase` | Reads a local project (Next.js, React/Vite, Django, FastAPI, plain HTML…). Finds routes, meta tags, sitemap/robots, structured data, contact info and which file holds each social link. Flags mixed-case routes (`/About` vs `/about`), inconsistent LinkedIn URLs and missing prerendering. Ignores lockfiles and minified bundles. |
 | `seo_link_audit` | Returns a ranked `priority_fixes` list (most important first): noindex, broken links (with how many pages each is on), missing LocalBusiness schema / street address, JS-only pages, sitemap, canonicals, thin pages, weak internal links. |
 | `internal_link_suggestions` | Suggests "link from page A to page B with this anchor text" for weakly linked pages. Prefers descriptive multi-word anchors and your strongest pages as sources. |
-| `find_opportunities` | Lists directories/citation sites for your niche and country, plus ready search queries for guest posts, resource pages, local lists, podcasts and partners. |
+| `save_project` | Saves a site (yours or a client's) with its niche, location, country, keywords and competitors, so every other tool uses them. |
+| `list_projects` | Lists all your sites with niche, location, country, tracker progress and whether a kit is saved. |
+| `find_opportunities` | Lists directories and citation sites for the niche and country, plus ready search queries for roundups, local lists, guest posts, resource pages, podcasts, partners and competitor mentions. Pass `site=` to use a saved project. |
+| `add_custom_directory` | Adds your own directory (optionally only for one city). It's saved to `custom.json` and survives updates. |
+| `add_custom_footprint` | Adds your own search query using `{kw}`, `{loc}` and `{country}`. |
 | `qualify_prospect` | Opens a prospect and scores it 0-100. Detects guest-post pages, "top N companies" roundups, resource pages and directories. Judges spam by where the page links out (not by words in it). Follows contact/about pages to find a real email, and returns `recommended_template`. Blocked sites return `check_manually`, not a bad score. |
 | `build_submission_kit` | Builds one consistent Name/Address/Phone + descriptions kit for all directory sign-ups. Rejects placeholder values, never uses your brand name as the category, formats the phone one way, and lists `needs_review`. Saved as `.md` + `.json`. |
 | `generate_schema` | Ready-to-paste `LocalBusiness` JSON-LD (address, phone, email, sameAs, founding date) built from your kit. Lists missing fields instead of inventing them. |
@@ -336,7 +407,9 @@ Everything stays on your computer in `~/.backlink-mcp/`:
 
 | File | What |
 |---|---|
-| `tracker.json` | your opportunities and their status |
+| `projects.json` | your sites/clients: niche, location, country, keywords, competitors |
+| `custom.json` | your own directories, search queries, email templates and categories |
+| `tracker.json` | your opportunities and their status (for all sites) |
 | `submission_kit_<domain>.md` / `.json` | your copy-paste kit |
 | `scans/<domain>.json` | the last scan (used by audit and link suggestions) |
 | `http_token` | the secret for HTTP mode |
@@ -351,15 +424,51 @@ explorer %USERPROFILE%\.backlink-mcp   # Windows
 
 ---
 
-## Customise
+## Add your own directories and queries
 
-Edit `backlink_mcp/data.py`:
+Your additions go in `~/.backlink-mcp/custom.json`, **not** in the code, so `git pull` never overwrites them.
 
-- **`DIRECTORIES`**: add sites for your niche (`priority` 5 = do first; `region` = `"global"` or a country code like `"IN"`).
-- **`FOOTPRINTS`**: add search queries (`{kw}` = keyword, `{loc}` = location).
-- **`OUTREACH_TEMPLATES`**: change the email wording. Placeholders: `{contact}` `{target_site}` `{topic}` `{hook}` `{proof}` `{my_site}` `{my_name}` `{my_page}` `{broken_url}`.
+**The easy way: ask Claude**
+```
+Use backlinks add_custom_directory "Leeds Chamber of Commerce", url https://www.leedschamber.co.uk/, tags ["general", "local"], region "UK", priority 5, location "Leeds"
+Use backlinks add_custom_footprint group "local", query "{loc} {kw} association members"
+```
 
-Because it's installed with `-e` (editable), changes apply after restarting Claude. No reinstall needed.
+**By hand: edit `custom.json`**
+```json
+{
+  "directories": [
+    {"name": "Leeds Chamber of Commerce", "url": "https://www.leedschamber.co.uk/",
+     "tags": ["general", "local"], "region": "GB", "priority": 5, "location": "Leeds",
+     "notes": "members get a listing"}
+  ],
+  "footprints": {
+    "local": ["{loc} {kw} association members"]
+  },
+  "outreach_templates": {
+    "sponsorship": {
+      "needs": ["topic"],
+      "subject": "Sponsoring {topic}",
+      "body": "Hi {contact},\n\n{hook}\n\nWe'd love to sponsor {topic}...\n\n{my_name}\n{my_site}"
+    }
+  },
+  "category_hints": [
+    [["drone", "aerial"], "Aerial Photography Service"]
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `region` | `global`, a country code (`US`, `GB`, `IN`…) or a region: `EU`, `EUROPE`, `GCC`, `ANZ`, `NA`, `SEA`, `SOUTH_ASIA`. Can be a list. |
+| `location` | optional; only shown for projects in this city or area |
+| `tags` | the niches it suits: `general`, `local`, `software`, `it`, `saas`, `agency`, `design`, `startup`, `manufacturing`, `b2b`, `food`, `hospitality`, `beauty`, `fitness`, `healthcare`, `legal`, `realestate`, `trades`, `education`, `ecommerce`, `events`, `finance`, `automotive`, `nonprofit` |
+| `priority` | 5 = do first … 1 = nice to have |
+| Footprint placeholders | `{kw}` keyword, `{loc}` city/area, `{country}` country name |
+| Template placeholders | `{contact}` `{target_site}` `{topic}` `{hook}` `{proof}` `{my_site}` `{my_name}` `{my_page}` `{broken_url}` |
+
+Your entries win over built-ins with the same name. To change the built-in lists for everyone
+(for example, in a pull request), edit `backlink_mcp/data.py` and `backlink_mcp/countries.py`.
 
 ---
 
@@ -377,6 +486,8 @@ Because it's installed with `-e` (editable), changes apply after restarting Clau
 | SSL certificate error during scans (Mac) | Run `/Applications/Python\ 3*/Install\ Certificates.command` |
 | Scan finds 0 pages | The site blocks bots or is client-side only. Use `scan_codebase` on the project folder instead. |
 | Prospect says `check_manually` | That site blocks bots. It's not a bad site. Open it yourself or ask Claude to read it with web fetch. |
+| `find_opportunities` shows only general sites | No country was set, or the niche word wasn't recognised. Run `save_project` with a country and a common niche word (e.g. "dentist"), or add your own with `add_custom_directory`. |
+| `Unknown country` | Use a name or code: `India`/`IN`, `UK`/`GB`, `US`/`USA`, `UAE`/`AE`, `Australia`/`AU`… |
 | Kit says `ready_to_submit: false` | Look at `needs_review`. Usually a missing street address or PIN code. |
 | `command not found: backlink-mcp` | The venv isn't active. Use the full path: `~/adys-backlinks-mcp/.venv/bin/backlink-mcp` |
 
