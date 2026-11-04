@@ -36,9 +36,9 @@ are live, and tracks everything.
        │
        ▼
  1. SCAN      →  business name, phone, address, keywords, pages, broken links
- 2. AUDIT     →  what's wasting link power (noindex, no sitemap, no schema, orphan pages)
+ 2. AUDIT     →  a ranked "fix this first" list + ready-to-paste LocalBusiness schema
  3. FIND      →  directories to join + search queries for guest posts & resource pages
- 4. QUALIFY   →  scores each prospect site 0-100 (spam? accepts guest posts? contact email?)
+ 4. QUALIFY   →  scores each prospect 0-100, finds the real contact email, picks the right email template
  5. PREPARE   →  one copy-paste kit (same name/address/phone everywhere) + outreach emails
  6. TRACK     →  todo → submitted → pitched → live
  7. VERIFY    →  is the link really there? follow or nofollow? still live next month?
@@ -239,7 +239,7 @@ You should get your business name, pages and keywords back.
 npx @modelcontextprotocol/inspector ~/adys-backlinks-mcp/.venv/bin/backlink-mcp
 ```
 
-Click **Connect**, then **Tools → List Tools**. You should see **13 tools**. Run `scan_site` to test.
+Click **Connect**, then **Tools → List Tools**. You should see **14 tools**. Run `scan_site` to test.
 
 **Option C: quick terminal check**
 
@@ -253,38 +253,49 @@ If it just sits there waiting, it's working (it's listening for an MCP client). 
 
 ## How to use it (copy-paste prompts)
 
-Send these to Claude **one at a time**, in order. Change `yoursite.com`, the niche and the city to yours.
+Send these to Claude **one at a time**, in order. Change `yoursite.com`, the niche, the city and the paths to yours.
+
+> **Golden rule:** give Claude your **real** details. The tool rejects placeholders like `XXXXXXXXXX`,
+> `20XX` or `your full address`, because one wrong phone number copied to 20 directories is worse than none.
 
 **1. Scan and audit**
 ```
-Use backlinks to scan https://yoursite.com (max 50 pages), then run seo_link_audit and internal_link_suggestions. Give me a short list of what to fix, most important first.
+Use backlinks to scan https://yoursite.com (max 50 pages), then run seo_link_audit and internal_link_suggestions. Show me the priority_fixes list.
 ```
 
 **2. Check your code (optional)**
 ```
-Use backlinks scan_codebase on ~/projects/my-website and tell me exactly which files to change to fix the issues.
+Use backlinks scan_codebase on /Users/you/path/to/your-site and tell me exactly which files to change for each priority fix.
 ```
 
-**3. Find where to get links**
+**3. Make your submission kit** (real details only)
 ```
-Use backlinks find_opportunities for niche "software erp", location "Nashik", country "IN", keywords ["erp software", "custom software development"]. Give me the top 15 directories to sign up on first, with links.
+Use backlinks build_submission_kit for yoursite.com with business_name "Your Company", city "Your City", state "Your State", postal_code "000000", address "Your street address", email "you@yoursite.com", phone "+91 98xxxxxxxx", founded "2025", services ["Service 1", "Service 2", "Service 3"]. Show me needs_review.
+```
+Leave out anything you don't know yet. The kit will list it under `needs_review`.
+
+**4. Add business schema to your site**
+```
+Use backlinks generate_schema for yoursite.com and add the script tag to my site's <head>.
 ```
 
-**4. Make your submission kit** (fill in your real details)
+**5. Find where to get links**
 ```
-Use backlinks build_submission_kit for yoursite.com with business_name "Your Company", city "Your City", email "you@yoursite.com", phone "+91 XXXXXXXXXX", address "full address", founded "20XX", services ["Service 1", "Service 2", "Service 3"].
+Use backlinks find_opportunities for niche "software erp", location "Your City", country "IN", keywords ["erp software", "custom software development"]. Give me the top 15 directories to sign up on first, with links.
 ```
-Now sign up on the step 3 directories, copy-pasting from the kit. **This is the fastest way to get your first links.**
+Now sign up on those directories, copy-pasting from the kit. **This is the fastest way to get your first links.**
 
-**5. Find real sites to pitch**
+**6. Find real sites to pitch**
 ```
-Run the guest_post and local search footprints from find_opportunities with web search. Run qualify_prospect on the top 15 results with my_domain yoursite.com. Add the "good" ones to the tracker.
+Run the roundups_and_lists and local search footprints with web search. Run qualify_prospect on the top 15 results with my_domain yoursite.com and topic_keywords ["erp", "software"]. Add the "good" ones to the tracker. List any "check_manually" ones separately.
 ```
 
-**6. Write the emails**
+**7. Write the emails**
 ```
-For the top 5 tracked prospects, use draft_outreach with my_site yoursite.com and my_name YourName. Personalise each first line based on their site.
+For each good prospect, use draft_outreach with its recommended_template, my_site yoursite.com, my_name YourName, a one-line hook about their page, and proof from these real facts: ["fact 1", "fact 2"]. Show me any warnings.
 ```
+Only put **true** facts in `proof` (clients served, years in business, real results). Skip prospects whose
+template is `signup`: those are just profile sign-ups, no email needed.
 
 **Anytime later**
 ```
@@ -302,16 +313,17 @@ recheck my live links for yoursite.com          ← do this once a month
 
 | Tool | What it does |
 |---|---|
-| `scan_site` | Crawls your live site (follows `robots.txt`, reads `sitemap.xml`). Finds business name, phone, email, address, socials, keywords, page SEO data and broken links. |
-| `scan_codebase` | Reads a local project (Next.js, React/Vite, Django, FastAPI, plain HTML…). Finds routes, meta tags, sitemap/robots, structured data and contact info, and lists code-level fixes. |
-| `seo_link_audit` | Finds what wastes link power: noindex, missing canonical/title/description/OG tags, thin pages, orphan pages, broken links, missing business schema. |
-| `internal_link_suggestions` | Suggests "link from page A to page B with this anchor text" for weakly linked pages. |
+| `scan_site` | Crawls your live site (follows `robots.txt`, reads `sitemap.xml`). Finds business name, phone, email, address, socials, keywords, page SEO data and broken links. Separates truly broken links from bot-blocked ones (LinkedIn, Instagram…) and flags JavaScript-only pages. |
+| `scan_codebase` | Reads a local project (Next.js, React/Vite, Django, FastAPI, plain HTML…). Finds routes, meta tags, sitemap/robots, structured data, contact info and which file holds each social link. Flags mixed-case routes (`/About` vs `/about`), inconsistent LinkedIn URLs and missing prerendering. Ignores lockfiles and minified bundles. |
+| `seo_link_audit` | Returns a ranked `priority_fixes` list (most important first): noindex, broken links (with how many pages each is on), missing LocalBusiness schema / street address, JS-only pages, sitemap, canonicals, thin pages, weak internal links. |
+| `internal_link_suggestions` | Suggests "link from page A to page B with this anchor text" for weakly linked pages. Prefers descriptive multi-word anchors and your strongest pages as sources. |
 | `find_opportunities` | Lists directories/citation sites for your niche and country, plus ready search queries for guest posts, resource pages, local lists, podcasts and partners. |
-| `qualify_prospect` | Opens a prospect site and scores it 0-100: accepts guest posts? resource page? spam signals? noindex? contact email? already links to you? |
-| `build_submission_kit` | Builds one consistent Name/Address/Phone + descriptions kit for all directory sign-ups. Saved as `.md` + `.json`. |
-| `draft_outreach` | Writes an email: `guest_post`, `resource_page`, `broken_link`, `unlinked_mention`, `partner`, `testimonial`, `local_press`. Never sends anything. |
+| `qualify_prospect` | Opens a prospect and scores it 0-100. Detects guest-post pages, "top N companies" roundups, resource pages and directories. Judges spam by where the page links out (not by words in it). Follows contact/about pages to find a real email, and returns `recommended_template`. Blocked sites return `check_manually`, not a bad score. |
+| `build_submission_kit` | Builds one consistent Name/Address/Phone + descriptions kit for all directory sign-ups. Rejects placeholder values, never uses your brand name as the category, formats the phone one way, and lists `needs_review`. Saved as `.md` + `.json`. |
+| `generate_schema` | Ready-to-paste `LocalBusiness` JSON-LD (address, phone, email, sameAs, founding date) built from your kit. Lists missing fields instead of inventing them. |
+| `draft_outreach` | Writes an email: `guest_post`, `list_inclusion`, `resource_page`, `broken_link`, `unlinked_mention`, `partner`, `testimonial`, `local_press`. Uses your personal `hook` and real `proof`, never claims a relationship you don't have, and returns `warnings` until it's ready to send. Never sends anything. |
 | `verify_backlink` | Checks a page really links to you: anchor text, follow/nofollow/sponsored, and whether that page is indexable. |
-| `tracker_add` | Adds an opportunity to your tracker. |
+| `tracker_add` | Adds an opportunity to your tracker. Blocks a second entry for the same directory. |
 | `tracker_update` | Changes status/notes: `todo`, `submitted`, `pitched`, `live`, `rejected`. |
 | `tracker_list` | Shows your tracker with a summary. |
 | `recheck_live_links` | Re-checks all your live links and flags any that got removed or became nofollow. |
@@ -345,7 +357,7 @@ Edit `backlink_mcp/data.py`:
 
 - **`DIRECTORIES`**: add sites for your niche (`priority` 5 = do first; `region` = `"global"` or a country code like `"IN"`).
 - **`FOOTPRINTS`**: add search queries (`{kw}` = keyword, `{loc}` = location).
-- **`OUTREACH_TEMPLATES`**: change the email wording.
+- **`OUTREACH_TEMPLATES`**: change the email wording. Placeholders: `{contact}` `{target_site}` `{topic}` `{hook}` `{proof}` `{my_site}` `{my_name}` `{my_page}` `{broken_url}`.
 
 Because it's installed with `-e` (editable), changes apply after restarting Claude. No reinstall needed.
 
@@ -364,6 +376,8 @@ Because it's installed with `-e` (editable), changes apply after restarting Clau
 | `404` on the HTTP URL | Wrong secret in the URL. Copy it again from the `--http` startup message. |
 | SSL certificate error during scans (Mac) | Run `/Applications/Python\ 3*/Install\ Certificates.command` |
 | Scan finds 0 pages | The site blocks bots or is client-side only. Use `scan_codebase` on the project folder instead. |
+| Prospect says `check_manually` | That site blocks bots. It's not a bad site. Open it yourself or ask Claude to read it with web fetch. |
+| Kit says `ready_to_submit: false` | Look at `needs_review`. Usually a missing street address or PIN code. |
 | `command not found: backlink-mcp` | The venv isn't active. Use the full path: `~/adys-backlinks-mcp/.venv/bin/backlink-mcp` |
 
 **Logs**
@@ -374,6 +388,9 @@ Because it's installed with `-e` (editable), changes apply after restarting Clau
 ---
 
 ## Update
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed.
+
 
 ```bash
 cd ~/adys-backlinks-mcp

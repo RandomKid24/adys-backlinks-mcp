@@ -70,60 +70,67 @@ DIRECTORIES = [
     _d("Yelp for Business", "https://business.yelp.com/", ["local", "food", "beauty"], "US", 3),
 ]
 
+# Ordered by how well they usually work for Indian/local businesses: lists and local first.
 FOOTPRINTS = {
+    "roundups_and_lists": [
+        'top {kw} companies in {loc}',
+        'best {kw} companies {loc}',
+        '{kw} companies in {loc} list',
+        'top {kw} companies in India',
+        'best {kw} startups India',
+        '{kw} "expert roundup"',
+    ],
+    "local": [
+        '{loc} business directory',
+        '{loc} IT companies list',
+        '{loc} startups list',
+        '{loc} chamber of commerce members',
+        '{loc} industrial association members',
+        '{loc} local news business',
+        '"{loc}" {kw} blog',
+    ],
     "guest_post": [
         '{kw} "write for us"',
-        '{kw} "guest post" "guidelines"',
-        '{kw} "submit an article"',
+        '{kw} "guest post guidelines"',
         '{kw} "become a contributor"',
-        'intitle:"write for us" {kw} India',
+        'intitle:"write for us" technology India',
     ],
     "resource_page": [
         '{kw} inurl:resources',
         '{kw} "useful links"',
         '{kw} intitle:"resources" "tools"',
     ],
-    "local": [
-        '{loc} business directory',
-        '{loc} {kw} companies list',
-        '{loc} chamber of commerce members',
-        '{loc} startups list',
-        '{loc} local news business',
-        '"{loc}" {kw} blog',
-    ],
-    "roundups_and_lists": [
-        'top {kw} companies {loc}',
-        'best {kw} agencies {loc}',
-        '{kw} "expert roundup"',
-    ],
     "podcasts_and_interviews": [
         '{kw} podcast "be a guest"',
-        '{kw} founder interview India',
+        'India founder interview {kw}',
     ],
     "partners_and_tools": [
         '{kw} "technology partners"',
-        '{kw} "our customers" OR "case studies" -jobs',
+        '{kw} "partner program"',
     ],
     "events_and_education": [
         '{loc} tech meetup',
-        '{loc} college "industry partner" {kw}',
-        '{kw} hackathon sponsor India',
+        '{loc} college "industry partner"',
+        '{loc} hackathon sponsor',
     ],
 }
 
+# Placeholders: {contact} {target_site} {topic} {my_site} {my_name} {my_page} {broken_url} {proof} {hook}
+# Rules for these templates: never claim a relationship that doesn't exist, keep it short, give the reader
+# a reason that's about them. {hook} is one personalised sentence about their page (written by Claude).
 OUTREACH_TEMPLATES = {
     "guest_post": {
+        "needs": ["topic"],
         "subject": "Article idea for {target_site}: {topic}",
         "body": """
 Hi {contact},
 
-I've been reading {target_site} and liked how you cover practical topics for your readers.
+{hook}
 
-I'd like to write an original piece on "{topic}" - written from hands-on project experience, no fluff,
-no promotional content. Happy to follow your guidelines and include a short author bio linking to {my_site}.
-
-{extra}
-
+I'd like to write an original article for {target_site}: "{topic}". It would be based on real project
+work, practical, and not promotional. I'm happy to follow your guidelines, and a short author bio
+with a link to {my_site} is all I'd ask for.
+{proof}
 Would that be a fit? I can send an outline first.
 
 Thanks,
@@ -131,87 +138,114 @@ Thanks,
 {my_site}
 """,
     },
-    "resource_page": {
-        "subject": "Suggestion for your resources page",
+    "list_inclusion": {
+        "needs": ["proof"],
+        "subject": "For your list on {target_site}",
         "body": """
 Hi {contact},
 
-I came across your resources page on {target_site} - genuinely useful list.
+{hook}
 
-We published {my_page}, which covers {topic}. It might be a helpful addition for your readers.
-{extra}
+If you update the list, I'd like {my_site} to be considered. A few facts that may help:
+{proof}
 
-Either way, thanks for putting the list together.
+Happy to send anything else you need to evaluate us. No pressure either way.
 
+Thanks,
+{my_name}
+{my_site}
+""",
+    },
+    "resource_page": {
+        "needs": ["my_page", "topic"],
+        "subject": "A resource for your {topic} list",
+        "body": """
+Hi {contact},
+
+{hook}
+
+We published a page that covers {topic}: {my_page}
+It might be useful for your readers. Completely fine if it isn't a fit.
+
+Thanks,
 {my_name}
 {my_site}
 """,
     },
     "broken_link": {
+        "needs": ["broken_url", "my_page"],
         "subject": "Broken link on {target_site}",
         "body": """
 Hi {contact},
 
-Quick heads-up: while reading {target_site} I noticed a link to {broken_url} that no longer works.
+{hook}
 
-If you're looking for a replacement, our page {my_page} covers {topic} and is kept up to date.
-No worries if it isn't a fit - just wanted to flag the broken link.
+Quick heads-up: the link to {broken_url} on that page no longer works.
+
+If you want a replacement, {my_page} covers the same topic and is kept up to date.
+Either way, thought you'd want to know about the broken link.
 
 {my_name}
 {my_site}
 """,
     },
     "unlinked_mention": {
-        "subject": "Thanks for mentioning us",
+        "needs": [],
+        "subject": "Thanks for the mention",
         "body": """
 Hi {contact},
 
-Thanks for mentioning us on {target_site} - really appreciate it.
+{hook}
 
-Would you be open to linking the mention to {my_site} so readers can find us easily?
-{extra}
+Thanks for mentioning us on {target_site}. Would you be open to linking the mention to {my_site},
+so readers can find us easily?
 
 Thanks again,
 {my_name}
 """,
     },
     "partner": {
-        "subject": "Partner listing - {my_site} x {target_site}",
+        "needs": ["topic"],
+        "subject": "Possible collaboration: {topic}",
         "body": """
 Hi {contact},
 
-We've been working with {target_site} on {topic}, and it's gone well.
-If you have a partners / integrations / customers page, we'd be glad to be listed - and happy to feature
-you on our side or write a short case study together.
+{hook}
 
-{extra}
+I run {my_site}. I think there's a natural fit between what you do and our work on {topic}.
+A few ideas, whichever is useful to you: a joint case study or article, listing each other on
+partner/integration pages, or referring clients where the other is the better fit.
+{proof}
+Open to a quick chat?
 
 {my_name}
 {my_site}
 """,
     },
     "testimonial": {
+        "needs": ["topic"],
         "subject": "A testimonial for {target_site}",
         "body": """
 Hi {contact},
 
-We've been using {target_site} for {topic} and it's been genuinely helpful.
-If you collect customer testimonials, I'd be happy to write a short one (and you're welcome to link it to {my_site}).
-
-{extra}
+We use {target_site} for {topic}, and it's genuinely been helpful.
+If you collect customer testimonials, I'd be happy to write a short honest one. You're welcome to
+link it to {my_site}.
 
 {my_name}
 """,
     },
     "local_press": {
-        "subject": "Story idea: {topic}",
+        "needs": ["topic"],
+        "subject": "Local story idea: {topic}",
         "body": """
 Hi {contact},
 
-I run {my_site}, a local business. We recently {topic} and I thought it might interest your readers.
-{extra}
+{hook}
 
-Happy to share details, photos or a quote.
+Story idea for your readers: {topic}.
+{proof}
+I'm {my_name} from {my_site}, based locally. Happy to share details, photos or a quote.
 
 {my_name}
 {my_site}

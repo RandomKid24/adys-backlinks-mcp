@@ -1,6 +1,6 @@
 [project]
 name = "backlink-mcp"
-version = "1.0.0"
+version = "1.1.0"
 description = "MCP server that scans your site/code and helps you build real, white-hat backlinks"
 readme = "README.md"
 license = "MIT"

@@ -37,8 +37,10 @@ from .data import DIRECTORIES, FOOTPRINTS, OUTREACH_TEMPLATES
 mcp = _Server(
     "backlink-builder",
     instructions=(
-        "Workflow: scan_site and/or scan_codebase -> seo_link_audit -> find_opportunities -> "
-        "build_submission_kit -> draft_outreach -> tracker_add / tracker_update -> verify_backlink. "
+        "Workflow: scan_site and/or scan_codebase -> seo_link_audit (follow priority_fixes) -> generate_schema -> "
+        "find_opportunities -> build_submission_kit -> qualify_prospect -> tracker_add -> draft_outreach -> "
+        "verify_backlink. Never pass placeholder values (XXXX, 20XX, 'your address'); ask the user instead. "
+        "Only put real, verifiable facts in outreach proof; never claim a past relationship. "
         "Use your own web search with the footprint queries from find_opportunities to find real "
         "prospects. Never post links automatically; the human submits/sends."
     ),
@@ -65,6 +67,50 @@ SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "out", "venv", ".
              "__pycache__", ".cache", "coverage", ".turbo", "vendor", "staticfiles", ".svelte-kit"}
 CODE_EXT = {".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".astro", ".py",
             ".md", ".mdx", ".json", ".txt", ".xml", ".php"}
+SKIP_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "poetry.lock",
+              "composer.lock", "Pipfile.lock", "tsconfig.json", "tsconfig.node.json", "tsconfig.app.json"}
+# Placeholder / test / library-author emails that must never be treated as real contacts.
+JUNK_EMAIL_RE = re.compile(
+    r"^(test|demo|sample|user|username|name|you|your|yourname|email|info@example|admin@example|john|jane|"
+    r"someone|me|foo|bar|abc|xyz)@|@(test|example|domain|email|company|yourcompany|yourdomain|mysite|"
+    r"site|sentry|wixpress|izs)\.|\.(png|jpe?g|gif|webp|svg|css|js)$|noreply|no-reply|donotreply|@\d|"
+    r"@2x\.|u00",
+    re.I,
+)
+# Values that look like unfilled template placeholders.
+PLACEHOLDER_RE = re.compile(
+    r"x{4,}|X{4,}|\b20XX\b|\b19XX\b|\byour (full |street |business )?(address|name|city|company|email|phone)\b|"
+    r"\b(lorem|ipsum|tbd|todo|placeholder|n/?a|fill (me|in))\b|<[^>]+>|\[[^\]]+\]|^\s*$",
+    re.I,
+)
+# Social sites that block bots: a 4xx/999 from them means "couldn't verify", not "broken".
+BOT_WALLED = ("linkedin.com", "instagram.com", "facebook.com", "x.com", "twitter.com", "tiktok.com",
+              "quora.com", "medium.com", "indiamart.com", "justdial.com", "glassdoor")
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0 Safari/537.36")
+BROWSER_HEADERS = {"User-Agent": BROWSER_UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                   "Accept-Language": "en-IN,en;q=0.9"}
+
+
+def _clean_emails(emails) -> list[str]:
+    out = []
+    for e in emails:
+        e = e.strip().strip(".").lower()
+        if e and not JUNK_EMAIL_RE.search(e) and e not in out:
+            out.append(e)
+    return out
+
+
+def _is_placeholder(v) -> bool:
+    return isinstance(v, str) and bool(PLACEHOLDER_RE.search(v))
+
+
+def _brand_words(name: str | None, domain: str = "") -> set[str]:
+    words = set(re.findall(r"[a-z]{3,}", (name or "").lower()))
+    stem = domain.split(".")[0] if domain else ""
+    if stem:
+        words.add(stem)
+    return words
 
 
 # ----------------------------------------------------------------- helpers
@@ -86,8 +132,9 @@ def _norm(url: str) -> str:
     return f"{p.scheme}://{p.netloc.lower()}{path}" + (f"?{p.query}" if p.query else "")
 
 
-def _keywords(text: str, n: int = 15) -> list[str]:
-    words = [w for w in re.findall(r"[a-zA-Z][a-zA-Z\-]{2,}", text.lower()) if w not in STOP]
+def _keywords(text: str, n: int = 15, exclude: set[str] | None = None) -> list[str]:
+    ex = STOP | (exclude or set())
+    words = [w for w in re.findall(r"[a-zA-Z][a-zA-Z\-]{2,}", text.lower()) if w not in ex]
     uni = Counter(words)
     bi = Counter(f"{a} {b}" for a, b in zip(words, words[1:]) if a != b)
     scored = [(k, v * 2.5) for k, v in bi.items() if v > 1] + list(uni.items())
@@ -155,7 +202,11 @@ def _parse_page(url: str, html: str) -> dict:
         "h2": [h.get_text(" ", strip=True) for h in soup.find_all("h2")][:10],
         "lang": (soup.html.get("lang") if soup.html else None),
         "word_count": len(text.split()),
-        "emails": sorted(set(EMAIL_RE.findall(html)))[:5],
+        "client_rendered": bool(soup.find(id=re.compile(r"^(root|app|__next|__nuxt|svelte)$")))
+        and len(text.split()) < 80,
+        "emails": _clean_emails(
+            [a["href"][7:].split("?")[0] for a in soup.find_all("a", href=True) if a["href"].lower().startswith("mailto:")]
+            + EMAIL_RE.findall(html))[:5],
         "tel_links": sorted({a["href"][4:] for a in soup.find_all("a", href=True) if a["href"].startswith("tel:")})[:5],
         "jsonld_types": sorted({str(d.get("@type")) for d in _jsonld(soup) if d.get("@type")}),
         "jsonld": _jsonld(soup)[:5],
@@ -213,12 +264,36 @@ async def _crawl(start: str, max_pages: int) -> dict:
                         r"\.(pdf|jpg|jpeg|png|gif|webp|svg|zip|mp4|css|js)$", l["href"], re.I):
                         queue.append(l["href"])
         # check a sample of external links for broken outbound links
-        ext = sorted({l["href"] for p in pages.values() for l in p["links"] if _domain(l["href"]) != dom})[:40]
-        res = await asyncio.gather(*(c.head(u) for u in ext), return_exceptions=True)
-        broken_out = [{"url": u, "status": getattr(r, "status_code", type(r).__name__)}
-                      for u, r in zip(ext, res) if isinstance(r, Exception) or r.status_code >= 400]
+        found_on = Counter(l["href"] for p in pages.values() for l in {x["href"]: x for x in p["links"]}.values()
+                           if _domain(l["href"]) != dom and l["href"].startswith("http"))
+        ext = [u for u, _ in found_on.most_common(60)]
+
+        async def _check(u: str):
+            try:
+                r = await c.head(u, headers=BROWSER_HEADERS)
+                if r.status_code in (403, 405, 429, 501, 999) or r.status_code >= 400:
+                    r = await c.get(u, headers=BROWSER_HEADERS)
+                return r.status_code
+            except Exception as e:  # noqa: BLE001
+                return type(e).__name__
+
+        res = await asyncio.gather(*(_check(u) for u in ext))
+        broken_out, unverified_out = [], []
+        for u, st in zip(ext, res):
+            if isinstance(st, int) and st < 400:
+                continue
+            item = {"url": u, "status": st, "found_on_pages": found_on[u]}
+            walled = any(b in _domain(u) for b in BOT_WALLED)
+            # Bot-walled sites answer 999/403/429 to everyone; only a clean 404/410 there is meaningful.
+            if walled and st not in (404, 410):
+                item["note"] = "site blocks bots - open it in a browser to confirm"
+                unverified_out.append(item)
+            else:
+                if walled:
+                    item["note"] = "social sites sometimes 404 for bots - confirm in a browser"
+                broken_out.append(item)
     return {"domain": dom, "start": start, "pages": pages, "broken_internal": broken,
-            "broken_outbound": broken_out, "robots_txt": robots_txt,
+            "broken_outbound": broken_out, "unverified_outbound": unverified_out, "robots_txt": robots_txt,
             "sitemap_found": bool(sitemap_urls), "sitemap_count": len(sitemap_urls), "scanned_at": _now()}
 
 
@@ -235,8 +310,10 @@ def _profile_from_pages(pages: dict, domain: str) -> dict:
                 org = org or d
     home = next(iter(pages.values()), {})
     addr = org.get("address", {}) if isinstance(org.get("address"), dict) else {}
+    name = (org.get("name") or (home.get("og") or {}).get("site_name")
+            or re.split(r"\s[|\-–—:]\s", home.get("title") or domain)[0].strip())
     return {
-        "name": org.get("name") or (home.get("og") or {}).get("site_name") or (home.get("title") or domain).split("|")[0].split("-")[0].strip(),
+        "name": name,
         "website": f"https://{domain}",
         "description": org.get("description") or home.get("meta_description"),
         "email": org.get("email") or (emails.most_common(1)[0][0] if emails else None),
@@ -244,7 +321,8 @@ def _profile_from_pages(pages: dict, domain: str) -> dict:
         "address": {k: addr.get(k) for k in ("streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry")} if addr else None,
         "logo": org.get("logo") if isinstance(org.get("logo"), str) else (org.get("logo") or {}).get("url"),
         "same_as": org.get("sameAs", []),
-        "keywords": _keywords(all_text, 20),
+        "keywords": _keywords(all_text, 20, _brand_words(name, domain)),
+        "schema_types": sorted({str(d.get("@type")) for p in pages.values() for d in p["jsonld"] if d.get("@type")}),
     }
 
 
@@ -268,6 +346,8 @@ async def scan_site(url: str, max_pages: int = 30) -> dict:
                   for p in data["pages"].values()],
         "broken_internal": data["broken_internal"],
         "broken_outbound": data["broken_outbound"],
+        "unverified_outbound": data.get("unverified_outbound", []),
+        "client_rendered_pages": [p["url"] for p in data["pages"].values() if p.get("client_rendered")],
         "top_outbound_domains": ext.most_common(15),
         "profiles_linked_from_site": sorted({d for d in ext if any(s in d for s in (
             "linkedin", "facebook", "instagram", "twitter", "x.com", "youtube", "github", "justdial",
@@ -301,12 +381,15 @@ def scan_codebase(path: str, max_files: int = 3000) -> dict:
     if reqs.exists() and "fastapi" in reqs.read_text(errors="ignore").lower():
         framework.append("FastAPI")
 
-    routes, titles, descs, ext_links, emails, phones = set(), set(), set(), Counter(), set(), set()
+    routes, titles, descs, ext_links, emails, phones = set(), set(), set(), Counter(), Counter(), set()
+    route_files: dict[str, set[str]] = defaultdict(set)
+    social_links: dict[str, set[str]] = defaultdict(set)
     files_with_jsonld, files_with_meta, sitemap, robots, text_blob, n = [], [], [], [], "", 0
     for f in root.rglob("*"):
         if n >= max_files:
             break
-        if any(part in SKIP_DIRS for part in f.parts) or not f.is_file() or f.suffix.lower() not in CODE_EXT:
+        if (any(part in SKIP_DIRS for part in f.parts) or not f.is_file() or f.suffix.lower() not in CODE_EXT
+                or f.name in SKIP_FILES or f.name.endswith((".min.js", ".map", ".d.ts"))):
             continue
         if f.stat().st_size > 800_000:
             continue
@@ -324,7 +407,9 @@ def scan_codebase(path: str, max_files: int = 3000) -> dict:
             r = re.sub(r"/?(page|index)?\.(tsx|jsx|ts|js|mdx|md)$", "", m.group(2))
             r = re.sub(r"\([^)]*\)/?", "", r)  # route groups
             routes.add("/" + r.strip("/"))
-        routes.update(re.findall(r"""path\s*[:=]\s*["'](/[^"']*)["']""", src))  # react-router
+        for rt in re.findall(r"""path\s*[:=]\s*["'](/[^"']*)["']""", src):  # react-router
+            routes.add(rt)
+            route_files[rt].add(rel)
         routes.update("/" + p for p in re.findall(r"""(?:re_)?path\(\s*r?["']\^?([^"'$]*)""", src) if f.suffix == ".py")
         titles.update(t.strip() for t in re.findall(r"<title[^>]*>([^<{]{3,120})</title>", src))
         titles.update(re.findall(r"""title\s*:\s*["'`]([^"'`]{3,120})["'`]""", src) if "metadata" in src or "Helmet" in src else [])
@@ -335,9 +420,11 @@ def scan_codebase(path: str, max_files: int = 3000) -> dict:
         if re.search(r'og:title|twitter:card|<Helmet|export const metadata|generateMetadata', src):
             files_with_meta.append(rel)
         for u in re.findall(r"""https?://[^\s"'`<>)]+""", src):
+            if any(b in _domain(u) for b in BOT_WALLED + ("youtube.com", "github.com")):
+                social_links[u.rstrip("/.,;")].add(rel)
             if not re.search(r"(schema\.org|w3\.org|googleapis|gstatic|cdn|unpkg|jsdelivr|npmjs|localhost|127\.0\.0\.1|example\.com|github\.com/[^/]+/[^/]+/(blob|issues))", u):
                 ext_links[_domain(u)] += 1
-        emails.update(e for e in EMAIL_RE.findall(src) if not re.search(r"(example|\.png|\.jpg|@\d|sentry|noreply)", e))
+        emails.update(_clean_emails(EMAIL_RE.findall(src)))
         phones.update(re.findall(r"tel:([+\d\s-]{8,})", src))
         if f.suffix.lower() in {".html", ".tsx", ".jsx", ".md", ".mdx", ".vue", ".astro"}:
             text_blob += " " + re.sub(r"<[^>]+>|\{[^}]*\}|import .*|export .*", " ", src)[:5000]
@@ -353,13 +440,30 @@ def scan_codebase(path: str, max_files: int = 3000) -> dict:
         issues.append("No per-page meta/OpenGraph handling found - shared links will preview poorly.")
     if "Vite" in framework and "Next.js" not in framework and not any(x in deps for x in ("vite-plugin-ssr", "vike", "vite-ssg", "react-snap")):
         issues.append("Client-only SPA (Vite) - consider prerendering (vite-ssg/vike/react-snap) so crawlers and link-preview bots see content.")
+    # routes that differ only by case (/About vs /about) split link equity and can 404 on case-sensitive hosts
+    by_lower = defaultdict(set)
+    for rt in routes:
+        by_lower[rt.lower().rstrip("/") or "/"].add(rt)
+    case_dupes = {k: sorted(v) for k, v in by_lower.items() if len(v) > 1}
+    upper_routes = sorted(rt for rt in routes if rt != rt.lower() and ":" not in rt)
+    if case_dupes:
+        issues.append(f"Routes differing only by case: {case_dupes} - keep one lowercase URL and 301 the others.")
+    elif upper_routes:
+        issues.append(f"Routes with uppercase letters: {upper_routes[:8]} - use lowercase URLs (and match the sitemap).")
+    linkedin = sorted(u for u in social_links if "linkedin.com" in u)
+    if len({re.sub(r"https?://([a-z]{2}\.)?(www\.)?", "", u) for u in linkedin}) > 1:
+        issues.append(f"Different LinkedIn URLs used across the code: {linkedin} - use one canonical URL everywhere.")
     return {
         "root": str(root), "files_scanned": n, "framework": framework or ["unknown/static"],
         "routes": sorted(routes)[:200], "titles": sorted(titles)[:40], "descriptions": sorted(descs)[:20],
         "sitemap_files": sitemap, "robots_files": robots, "jsonld_files": files_with_jsonld[:20],
-        "meta_files": files_with_meta[:20], "emails": sorted(emails)[:10], "phones": sorted(phones)[:5],
+        "meta_files": files_with_meta[:20],
+        "emails": [e for e, _ in emails.most_common(10)], "phones": sorted(phones)[:5],
+        "social_links": {u: sorted(f)[:5] for u, f in sorted(social_links.items())[:30]},
+        "case_duplicate_routes": case_dupes,
         "external_domains": ext_links.most_common(30), "keywords": _keywords(text_blob, 20),
         "issues": issues,
+        "tip": "social_links shows which files contain each profile URL - fix broken ones there.",
     }
 
 
@@ -405,11 +509,46 @@ def seo_link_audit(domain: str) -> dict:
     if not (prof.get("phone") and prof.get("address")):
         site_wide.append("Name/Address/Phone not machine-readable - add LocalBusiness schema; NAP must match every citation exactly")
     linkable = sorted(pages.values(), key=lambda p: -p["word_count"])[:5]
+
+    # Ranked, de-duplicated fix list: (impact, text). Higher impact first.
+    fixes: list[tuple[int, str]] = []
+    if issues.get("noindex"):
+        fixes.append((100, f"Remove noindex from {len(issues['noindex'])} page(s): {issues['noindex'][:5]}"))
+    for b in sorted(d.get("broken_outbound", []), key=lambda x: -x.get("found_on_pages", 1)):
+        if b.get("found_on_pages", 1) >= 3:
+            fixes.append((90, f"Broken link {b['url']} (status {b['status']}) on {b['found_on_pages']} pages"
+                              + (f" - {b['note']}" if b.get("note") else "")))
+    if d["broken_internal"]:
+        fixes.append((85, f"Fix {len(d['broken_internal'])} broken internal link(s): {[x['url'] for x in d['broken_internal'][:5]]}"))
+    types = {t for p in pages.values() for t in p["jsonld_types"]}
+    if not any("LocalBusiness" in t or t in ("ProfessionalService", "Store", "Restaurant", "Hotel") for t in types):
+        fixes.append((80, "No LocalBusiness schema - run generate_schema and paste the output into index.html <head>"
+                          + ("" if (prof.get("address") or {}).get("streetAddress") else
+                             "; you also need a street address on the site (Google Business Profile & most directories require it)")))
+    if not prof.get("same_as"):
+        fixes.append((50, "No sameAs social links in schema - add your LinkedIn/GitHub/Facebook URLs (generate_schema does this)"))
+    spa = [p["url"] for p in pages.values() if p.get("client_rendered")]
+    if spa:
+        fixes.append((75, f"{len(spa)} page(s) render only in JavaScript - prerender them (vite-ssg / react-snap / Next.js) so bots see content"))
+    if not d["sitemap_found"]:
+        fixes.append((70, "Add sitemap.xml and reference it in robots.txt"))
+    if issues.get("missing_canonical"):
+        fixes.append((45, f"Add canonical tags to {len(issues['missing_canonical'])} page(s)"))
+    if issues.get("missing_meta_description"):
+        fixes.append((40, f"Write meta descriptions for {len(issues['missing_meta_description'])} page(s)"))
+    if issues.get("thin_content(<250 words)"):
+        fixes.append((35, f"Expand thin pages: {issues['thin_content(<250 words)'][:6]}"))
+    if issues.get("weak_internal_links(<=1 inbound)"):
+        fixes.append((30, "Strengthen internal links to weak pages - see internal_link_suggestions"))
+    if issues.get("missing_og_tags"):
+        fixes.append((20, f"Add og:title/og:image to {len(issues['missing_og_tags'])} page(s) for better link previews"))
     return {
+        "priority_fixes": [t for _, t in sorted(fixes, key=lambda x: -x[0])],
         "site_wide": site_wide,
         "page_issues": {k: v[:25] for k, v in issues.items()},
         "broken_internal": d["broken_internal"],
         "broken_outbound": d["broken_outbound"],
+        "unverified_outbound": d.get("unverified_outbound", []),
         "most_linkable_pages": [{"url": p["url"], "title": p["title"], "words": p["word_count"]} for p in linkable],
         "tip": "Fix noindex/broken/canonical issues before outreach - links to broken or noindexed pages are wasted.",
     }
@@ -427,22 +566,27 @@ def internal_link_suggestions(domain: str, limit: int = 20) -> list[dict]:
     brand = set(re.findall(r"[a-z]+", (d.get("profile", {}).get("name") or "").lower()))
     title_words = Counter(w for p in pages.values() for w in set(re.findall(r"[a-z]+", (p["title"] or "").lower())))
     common = {w for w, c in title_words.items() if c > len(pages) * 0.6} if len(pages) >= 5 else set()
+    brand |= _brand_words(None, dom)
     out = []
     for tu, tp in sorted(pages.items(), key=lambda kv: inbound[kv[0]]):
-        kws = [k for k in _keywords(" ".join(filter(None, [tp["title"], *tp["h1"], tp["meta_description"]])), 8)
-               if not set(k.split()) & (brand | common)][:4]
-        linked_from = {su for su, sp in pages.items() if any(l["href"] == tu for l in sp["links"])}
-        for su, sp in pages.items():
-            if su == tu or su in linked_from:
-                continue
-            txt = sp["text_sample"].lower()
-            hit = next((k for k in kws if k in txt), None)
-            if hit:
-                out.append({"from": su, "to": tu, "anchor": hit, "target_inbound_now": inbound[tu]})
-                break
         if len(out) >= limit:
             break
-    return out
+        src_text = " ".join(filter(None, [tp["title"], *tp["h1"], *tp.get("h2", [])[:3], tp["meta_description"]]))
+        kws = [k for k in _keywords(src_text, 12, brand | common) if len(k) > 3]
+        # multi-word phrases make better, more descriptive anchors - try them first
+        kws = sorted(kws, key=lambda k: -len(k.split()))[:6]
+        linked_from = {su for su, sp in pages.items() if any(l["href"] == tu for l in sp["links"])}
+        picks = 0
+        for su, sp in sorted(pages.items(), key=lambda kv: -inbound[kv[0]]):  # strongest pages first
+            if su == tu or su in linked_from or picks >= 3:
+                continue
+            txt = sp["text_sample"].lower()
+            hit = next((k for k in kws if re.search(rf"\b{re.escape(k)}\b", txt)), None)
+            if hit:
+                out.append({"from": su, "to": tu, "anchor": hit, "target_inbound_now": inbound[tu],
+                            "source_strength": inbound[su]})
+                picks += 1
+    return out[:limit]
 
 
 # ----------------------------------------------------------------- tools: opportunities
@@ -474,10 +618,8 @@ def find_opportunities(niche: str, location: str = "", country: str = "IN",
         for t in tmpls:
             if "{loc}" in t and not loc:
                 continue
-            for k in kw[:3]:
+            for k in (kw[:3] if "{kw}" in t else kw[:1]):
                 queries.append({"type": group, "query": t.format(kw=k, loc=loc).strip()})
-            if "{kw}" not in t:
-                break
     seen, uniq = set(), []
     for q in queries:
         if q["query"] not in seen:
@@ -494,118 +636,387 @@ def find_opportunities(niche: str, location: str = "", country: str = "IN",
         "how_to_use": [
             "Claim high-priority citations first (Google Business Profile, Bing Places, then niche directories).",
             "Use the exact same Name/Address/Phone everywhere (see build_submission_kit).",
-            "Run footprint queries with web search; qualify each result with qualify_prospect; add good ones via tracker_add.",
+            "Run footprint queries with web search (roundups/local lists first - they convert best for local businesses).",
+            "qualify_prospect each result with topic_keywords; use its recommended_template in draft_outreach.",
+            "'check_manually' verdicts are blocked sites, not bad ones - open them in a browser.",
             "Aim for relevance over volume: 10 relevant links beat 200 junk ones.",
         ],
     }
 
 
+SPAM_LINK_RE = re.compile(r"\b(casino|poker|slot[s-]?|betting|bet365|1xbet|viagra|cialis|payday|escort|porn|"
+                          r"xxx|essay[- ]?writing|buy[- ]?followers|crack(ed)?[- ]?software)\b", re.I)
+ROUNDUP_RE = re.compile(r"\b(top|best|leading|list of|\d{1,3}\+?)\b.{0,60}\b(companies|agencies|firms|developers|"
+                        r"startups|providers|vendors|tools|software|apps|platforms|consultants|manufacturers|suppliers)\b", re.I)
+CONTACT_LINK_RE = re.compile(r"contact|about|write[- ]?for[- ]?us|contribute|guest|advertis|submit|editor|team|reach", re.I)
+
+
+async def _fetch(c: httpx.AsyncClient, url: str):
+    try:
+        return await c.get(url, headers=BROWSER_HEADERS)
+    except Exception as e:  # noqa: BLE001
+        return e
+
+
 @mcp.tool()
-async def qualify_prospect(url: str, my_domain: str = "") -> dict:
-    """Fetch a prospect page and score it: is it live/indexable, does it accept guest posts or list
-    resources, does it already link to you, outbound-link density (spam signal), contact info found."""
-    async with httpx.AsyncClient(headers={"User-Agent": UA}, follow_redirects=True, timeout=20) as c:
-        try:
-            r = await c.get(url)
-        except Exception as e:
-            return {"url": url, "ok": False, "error": str(e)}
-    if r.status_code >= 400 or "html" not in r.headers.get("content-type", ""):
-        return {"url": url, "ok": False, "status": r.status_code}
-    p = _parse_page(str(r.url), r.text)
-    low = r.text.lower()
-    dom = _domain(str(r.url))
-    ext = [l for l in p["links"] if _domain(l["href"]) != dom]
+async def qualify_prospect(url: str, my_domain: str = "", topic_keywords: list[str] | None = None) -> dict:
+    """Fetch a prospect page and score it 0-100. Detects guest-post pages, roundup/"top N companies" lists
+    (ask to be included), resource pages and directories; checks noindex, outbound spam links and sponsored-only
+    policies; follows the site's contact/about/write-for-us pages to find real contact emails; and says which
+    outreach template to use. topic_keywords (e.g. ["erp", "software"]) raises the score for relevant pages."""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
+        r = await _fetch(c, url)
+        if isinstance(r, Exception):
+            return {"url": url, "ok": False, "error": str(r), "verdict": "check_manually"}
+        if r.status_code in (401, 403, 429, 503):
+            return {"url": url, "ok": False, "status": r.status_code, "verdict": "check_manually",
+                    "note": "Site blocks automated requests. Open it in a browser (or fetch it with web search/fetch) "
+                            "and judge it yourself - a block is not a quality signal."}
+        if r.status_code >= 400 or "html" not in r.headers.get("content-type", ""):
+            return {"url": url, "ok": False, "status": r.status_code, "verdict": "skip"}
+        p = _parse_page(str(r.url), r.text)
+        dom = _domain(str(r.url))
+        low_text = (p["text_sample"] + " " + " ".join(filter(None, [p["title"], *p["h1"], *p["h2"]]))).lower()
+        title_h1 = " ".join(filter(None, [p["title"], *p["h1"]]))
+        ext = [l for l in p["links"] if _domain(l["href"]) != dom]
+        spam_links = [l["href"] for l in ext if SPAM_LINK_RE.search(l["href"] + " " + l["text"])]
+
+        # follow contact-ish pages on the same site to find a real contact
+        contact_pages = []
+        for l in p["links"]:
+            if _domain(l["href"]) == dom and CONTACT_LINK_RE.search(l["href"] + " " + l["text"]) and l["href"] not in contact_pages:
+                contact_pages.append(l["href"])
+        emails = list(p["emails"])
+        write_page = None
+        for resp, cu in zip(await asyncio.gather(*(_fetch(c, u) for u in contact_pages[:4])), contact_pages[:4]):
+            if isinstance(resp, Exception) or resp.status_code >= 400:
+                continue
+            cp = _parse_page(str(resp.url), resp.text)
+            emails += cp["emails"]
+            if re.search(r"write for us|guest post guidelines|submit a guest post|become a contributor", cp["text_sample"], re.I):
+                write_page = cu
+    emails = _clean_emails(emails)
+    emails.sort(key=lambda e: (not e.endswith(dom), not re.match(r"(editor|content|marketing|hello|contact|info|team)@", e)))
+
     signals = {
-        "write_for_us": bool(re.search(r"write for us|guest post|contribute|submit (an )?article|guest author", low)),
-        "resource_page": bool(re.search(r"resources|useful links|recommended (tools|sites)|tools we (use|love)", low)),
-        "directory": bool(re.search(r"add (your )?(listing|business|site)|submit (your )?(site|listing|business)", low)),
-        "sponsored_only": bool(re.search(r"sponsored post|paid post|price list for (guest|post)", low)),
+        "write_for_us": bool(write_page or re.search(
+            r"write for us|guest post(ing)? guidelines|submit a guest post|become a (guest )?contributor|accepting guest posts",
+            low_text)),
+        "roundup_list": bool(ROUNDUP_RE.search(title_h1)),
+        "resource_page": bool(re.search(r"\b(useful links|recommended (tools|resources|sites)|resources? (page|list)|tools we (use|love))\b", low_text)
+                              or re.search(r"\bresources?\b", title_h1, re.I)),
+        "directory": bool(re.search(r"add (your )?(listing|business|company|site)|submit (your )?(site|listing|business|company)|list your (business|company)|claim (your )?(profile|listing)", low_text)),
+        "sponsored_only": bool(re.search(r"sponsored posts? only|paid (guest )?posts? only|guest post price|price for (a )?guest post", low_text)),
         "noindex": bool(p["robots"] and "noindex" in p["robots"].lower()),
-        "casino_pharma_spam": bool(re.search(r"casino|betting|viagra|cialis|payday loan|escort", low)),
+        "spam_outbound_links": len(spam_links) >= 2,
     }
+    kws = [k.lower() for k in (topic_keywords or [])]
+    relevant = bool(kws) and any(k in low_text for k in kws)
     already = [l for l in p["links"] if my_domain and _domain(l["href"]) == _domain(my_domain)]
-    score = 50 + 15 * signals["write_for_us"] + 10 * signals["resource_page"] + 10 * signals["directory"]
-    score -= 40 * signals["noindex"] + 50 * signals["casino_pharma_spam"] + 15 * signals["sponsored_only"]
-    score -= 15 if len(ext) > 150 else 0
+
+    score = 40
+    score += 25 * signals["write_for_us"] + 20 * signals["roundup_list"] + 10 * signals["resource_page"]
+    score += 15 * signals["directory"] + (10 if emails else 0) + (10 if relevant else 0)
     score += 5 if p["word_count"] > 800 else 0
+    score -= 40 * signals["noindex"] + 60 * signals["spam_outbound_links"] + 15 * signals["sponsored_only"]
+    score -= 15 if len(ext) > 200 else 0
+    if kws and not relevant:
+        score -= 15
+    score = max(0, min(100, score))
+
+    if already:
+        approach = ("already_linked", "They already link to you - check anchor/rel with verify_backlink; no outreach needed.")
+    elif signals["directory"]:
+        approach = ("signup", "Create/claim a profile on the site - no email needed.")
+    elif signals["write_for_us"]:
+        approach = ("guest_post", f"Pitch an article{' via ' + write_page if write_page else ''}.")
+    elif signals["roundup_list"]:
+        approach = ("list_inclusion", "Ask to be considered for this list - send real proof (projects, clients, reviews).")
+    elif signals["resource_page"]:
+        approach = ("resource_page", "Suggest one genuinely useful page of yours for their list.")
+    else:
+        approach = ("skip_or_manual", "No clear link opportunity on this page.")
+
     return {
         "url": str(r.url), "ok": True, "title": p["title"], "lang": p["lang"], "signals": signals,
-        "outbound_links": len(ext), "word_count": p["word_count"], "contact_emails": p["emails"],
-        "already_links_to_you": already, "score_0_100": max(0, min(100, score)),
+        "relevant_to_topic": relevant if kws else None, "outbound_links": len(ext), "spam_link_examples": spam_links[:3],
+        "word_count": p["word_count"], "contact_emails": emails[:5],
+        "contact_pages_checked": contact_pages[:4], "write_for_us_page": write_page,
+        "already_links_to_you": already, "score_0_100": score,
         "verdict": "skip" if score < 40 else ("good" if score >= 65 else "maybe"),
+        "recommended_template": approach[0], "how_to_approach": approach[1],
+        "next": "If good: tracker_add, then draft_outreach with recommended_template (unless signup/already_linked).",
     }
+
+
+CATEGORY_HINTS = [  # (keyword in site text, directory-style category)
+    (("erp", "crm", "hrms", "saas", "software development", "custom software", "web development", "app development"),
+     "Software Company"),
+    (("it services", "it company", "it solutions"), "IT Services"),
+    (("digital marketing", "seo agency", "social media marketing"), "Digital Marketing Agency"),
+    (("web design", "ui design", "ux design", "branding"), "Web Design Agency"),
+    (("manufactur", "machining", "fabrication", "industrial equipment", "autoclave", "pharma machinery"), "Manufacturer"),
+    (("restaurant", "cafe", "dining", "biryani"), "Restaurant"),
+    (("salon", "spa", "beauty", "hair"), "Beauty Salon"),
+    (("resort", "farm stay", "hotel", "homestay"), "Resort"),
+    (("clinic", "hospital", "dental", "doctor"), "Medical Clinic"),
+    (("school", "academy", "coaching", "institute", "training"), "Educational Institution"),
+]
+
+
+_DANGLING = {"a", "an", "the", "and", "or", "for", "of", "to", "in", "with", "on", "at", "by", "from", "our", "your"}
+ACRONYMS = {"erp", "crm", "hrms", "hr", "it", "ai", "ml", "seo", "ui", "ux", "api", "saas", "b2b", "iot", "plc", "amc",
+            "pos", "cms", "lms", "gst", "mis", "ios", "qa", "msme"}
+
+
+def _cut(text: str, n: int) -> str:
+    """Trim to n chars at a word boundary; prefer ending at a sentence; never leave a dangling 'for/and/the'."""
+    text = " ".join((text or "").split())
+    if len(text) <= n:
+        return text
+    head = text[:n]
+    end = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if end >= n * 0.5:
+        return head[: end + 1]
+    words = head.rsplit(" ", 1)[0].rstrip(",;:-–— ").split()
+    while words and words[-1].lower() in _DANGLING:
+        words.pop()
+    return " ".join(words).rstrip(",;:-–— ")
+
+
+def _smart_title(phrase: str) -> str:
+    return " ".join(w.upper() if w.lower() in ACRONYMS else w.capitalize() for w in phrase.split())
+
+
+def _guess_category(profile: dict, extra_text: str = "") -> str | None:
+    txt = " ".join([*(profile.get("keywords") or []), profile.get("description") or "", extra_text]).lower()
+    for keys, cat in CATEGORY_HINTS:
+        if any(k in txt for k in keys):
+            return cat
+    return None
+
+
+def _join(items: list[str]) -> str:
+    items = [i for i in items if i]
+    return items[0] if len(items) == 1 else (", ".join(items[:-1]) + " and " + items[-1] if items else "")
 
 
 @mcp.tool()
 def build_submission_kit(domain: str, business_name: str = "", category: str = "", phone: str = "",
-                         email: str = "", address: str = "", city: str = "", founded: str = "",
+                         email: str = "", address: str = "", city: str = "", state: str = "",
+                         postal_code: str = "", country: str = "India", founded: str = "",
                          services: list[str] | None = None, socials: list[str] | None = None,
-                         save: bool = True) -> dict:
-    """Build a consistent NAP + description kit for directory/citation submissions, merging the cached
-    scan profile with any fields you pass (passed values win). Saves Markdown + JSON to the data folder.
-    Review and rewrite descriptions in your own voice before submitting."""
+                         description: str = "", save: bool = True) -> dict:
+    """Build one consistent Name/Address/Phone + descriptions kit for directory/citation sign-ups. Merges the
+    cached scan profile with fields you pass (yours win). Placeholder values (XXXX, 20XX, "your address"...) are
+    rejected, never saved. Returns needs_review so you know what to fix before submitting. Saves .md + .json;
+    generate_schema reuses it."""
     d = _load(CACHE / f"{_domain(domain)}.json", {}) or {}
-    pr = d.get("profile", {})
+    pr = d.get("profile", {}) or {}
     a = pr.get("address") or {}
+    rejected = {}
+
+    def pick(field: str, given, fallback=None):
+        if isinstance(given, list):
+            good = [g for g in given if not _is_placeholder(g)]
+            if len(good) != len(given):
+                rejected[field] = [g for g in given if _is_placeholder(g)]
+            return good or fallback
+        if given and _is_placeholder(given):
+            rejected[field] = given
+            given = None
+        if fallback and _is_placeholder(fallback):
+            fallback = None
+        return given or fallback
+
+    name = pick("business_name", business_name, pr.get("name"))
+    brand = _brand_words(name, _domain(domain))
+    svc_default = []
+    for k in (pr.get("keywords") or []):
+        words = k.split()
+        # real service phrases only: 2+ words, not brand, not two acronyms glued together ("erp crm"), no overlap
+        if len(words) < 2 or set(words) & brand or all(w in ACRONYMS for w in words):
+            continue
+        if any(k in s_.lower() or s_.lower() in k for s_ in svc_default):
+            continue
+        svc_default.append(_smart_title(k))
+    svc_default = svc_default[:5]
     kit = {
-        "business_name": business_name or pr.get("name"),
+        "business_name": name,
         "website": pr.get("website") or f"https://{_domain(domain)}",
-        "category": category or (pr.get("keywords") or [""])[0],
-        "phone": phone or pr.get("phone"),
-        "email": email or pr.get("email"),
-        "address": address or ", ".join(v for v in a.values() if v) or None,
-        "city": city or a.get("addressLocality"),
-        "founded": founded or None,
-        "services": services or (pr.get("keywords") or [])[:8],
-        "social_profiles": socials or pr.get("same_as") or [],
+        "category": pick("category", category, _guess_category(pr, " ".join(services or []))),
+        "phone": pick("phone", phone, pr.get("phone")),
+        "email": pick("email", email, pr.get("email")),
+        "street_address": pick("address", address, a.get("streetAddress")),
+        "city": pick("city", city, a.get("addressLocality")),
+        "state": pick("state", state, a.get("addressRegion")),
+        "postal_code": pick("postal_code", postal_code, a.get("postalCode")),
+        "country": pick("country", country, a.get("addressCountry")),
+        "founded": pick("founded", founded),
+        "services": pick("services", services, svc_default),
+        "social_profiles": pick("socials", socials, pr.get("same_as") or []),
         "logo": pr.get("logo"),
     }
-    base = (pr.get("description") or "").strip()
-    svc = ", ".join(kit["services"][:5])
+    if kit["category"] and set(kit["category"].lower().split()) <= brand:
+        rejected["category"] = kit["category"]
+        kit["category"] = _guess_category(pr)
+    digits = re.sub(r"\D", "", kit["phone"] or "")
+    if kit["phone"]:
+        if len(digits) == 10 and (kit["country"] or "").lower() in ("india", "in"):
+            digits = "91" + digits
+        kit["phone_e164"] = "+" + digits
+        if digits.startswith("91") and len(digits) == 12:
+            kit["phone"] = f"+91 {digits[2:7]} {digits[7:]}"  # one display format, used everywhere
+
+    base = pick("description", description, pr.get("description")) or ""
+    svc = kit["services"] or []
+    where = f" in {kit['city']}" if kit["city"] else ""
+    cat = (kit["category"] or "company").lower()
+    intro = f"{kit['business_name']} is a {cat}{where}" + (f" that builds {_join(svc[:4])}." if svc else ".")
+    long_parts = [base or intro]
+    if base:  # description already introduces the business; add the concrete details after it
+        long_parts.append((f"Based{where}, we build " if where else "We build ") + _join(svc[:4]) + "." if svc else
+                          (f"We are based{where}." if where else ""))
+    if kit["founded"]:
+        long_parts.append(f"Founded in {kit['founded']}, we work with businesses across {kit['country'] or 'India'}.")
+    if len(svc) > 4:
+        long_parts.append(f"We also offer {_join(svc[4:7])}.")
     kit["descriptions"] = {
-        "tagline_60": (base or f"{kit['business_name']} - {kit['category']}")[:60],
-        "short_160": (base or f"{kit['business_name']} provides {svc}.")[:160],
-        "long_draft": (f"{kit['business_name']} is a {kit['category']} business"
-                       + (f" based in {kit['city']}" if kit["city"] else "")
-                       + (f", founded in {kit['founded']}" if kit["founded"] else "")
-                       + f". We offer {svc}. {base}").strip(),
+        "tagline_60": _cut(base or f"{kit['category'] or 'Business'}{where}", 60),
+        "short_160": _cut(base or intro, 160),
+        "long_750": _cut(" ".join(x for x in long_parts if x), 750),
     }
-    missing = [k for k in ("business_name", "phone", "email", "address", "city") if not kit[k]]
-    kit["missing_fields"] = missing
-    kit["rules"] = ["Use this exact NAP everywhere - no abbreviations that differ between sites.",
-                    "Use the homepage or the most relevant service page as the link URL.",
-                    "Upload the same logo and pick the closest primary category on each site."]
+    required = {"business_name": "Business name", "category": "Category", "phone": "Phone", "email": "Email",
+                "street_address": "Street address", "city": "City", "postal_code": "PIN / postal code"}
+    missing = [label for k, label in required.items() if not kit.get(k)]
+    needs_review = []
+    if missing:
+        needs_review.append(f"Missing: {', '.join(missing)}.")
+    if not kit["street_address"]:
+        needs_review.append("No street address - Google Business Profile, Justdial and most citations need one. "
+                            "Use your registered office address and show the same address on your website's contact page.")
+    if rejected:
+        needs_review.append(f"Ignored placeholder values: {rejected} - pass your real details.")
+    if not base:
+        needs_review.append("No site description found - pass description= with 1-2 sentences in your own words.")
+    needs_review.append("Read the descriptions once and adjust wording to sound like you.")
+    kit.update({"missing_fields": missing, "rejected_placeholders": rejected, "needs_review": needs_review,
+                "ready_to_submit": not missing and not rejected})
+    kit["rules"] = ["Copy name, address and phone EXACTLY as written here on every site - same spelling, same format.",
+                    "Link to your homepage unless the directory is about one specific product/service page.",
+                    "Use the same logo and the closest primary category everywhere."]
     if save:
-        out = DATA_DIR / f"submission_kit_{_domain(domain)}"
-        _save(out.with_suffix(".json"), kit)
-        md = [f"# Submission kit - {kit['business_name']}", ""]
-        md += [f"- **{k.replace('_', ' ').title()}:** {v if not isinstance(v, list) else ', '.join(v)}"
-               for k, v in kit.items() if k not in ("descriptions", "rules", "missing_fields")]
-        md += ["", "## Descriptions"] + [f"**{k}:** {v}" for k, v in kit["descriptions"].items()]
-        md += ["", "## Rules"] + [f"- {r}" for r in kit["rules"]]
-        if missing:
-            md += ["", f"**Missing:** {', '.join(missing)}"]
-        out.with_suffix(".md").write_text("\n".join(md), "utf-8")
-        kit["saved_to"] = [str(out.with_suffix(".json")), str(out.with_suffix(".md"))]
+        out_json = DATA_DIR / f"submission_kit_{_domain(domain)}.json"
+        out_md = DATA_DIR / f"submission_kit_{_domain(domain)}.md"
+        _save(out_json, kit)
+        addr_line = ", ".join(x for x in (kit["street_address"], kit["city"], kit["state"], kit["postal_code"], kit["country"]) if x)
+        md = [f"# Submission kit: {kit['business_name']}", "",
+              "**Status:** " + ("ready to submit" if kit["ready_to_submit"] else "needs review (see bottom)"), "",
+              "## Copy-paste details", "", "| Field | Value |", "|---|---|"]
+        rows = [("Business name", kit["business_name"]), ("Website", kit["website"]), ("Category", kit["category"]),
+                ("Phone", kit["phone"]), ("Email", kit["email"]), ("Address", addr_line), ("Founded", kit["founded"]),
+                ("Services", ", ".join(svc)), ("Social profiles", ", ".join(kit["social_profiles"])), ("Logo", kit["logo"])]
+        md += [f"| {k} | {v or '_missing_'} |" for k, v in rows]
+        md += ["", "## Descriptions", ""]
+        md += [f"**Tagline (≤60):** {kit['descriptions']['tagline_60']}", "",
+               f"**Short (≤160):** {kit['descriptions']['short_160']}", "",
+               f"**Long (≤750):** {kit['descriptions']['long_750']}", "", "## Rules", ""]
+        md += [f"- {r}" for r in kit["rules"]]
+        md += ["", "## Needs review", ""] + [f"- {r}" for r in needs_review]
+        out_md.write_text("\n".join(md), "utf-8")
+        kit["saved_to"] = [str(out_json), str(out_md)]
     return kit
+
+
+@mcp.tool()
+def generate_schema(domain: str, business_type: str = "ProfessionalService", area_served: str = "",
+                    price_range: str = "") -> dict:
+    """Generate ready-to-paste LocalBusiness JSON-LD (name, address, phone, email, logo, sameAs, foundingDate)
+    from the saved submission kit (or the last scan). Paste the returned script tag into your site's <head>
+    (e.g. index.html). business_type: ProfessionalService, LocalBusiness, Organization, Restaurant,
+    BeautySalon, Hotel, MedicalClinic, Store... Fields still missing are listed, never invented."""
+    dom = _domain(domain)
+    kit = _load(DATA_DIR / f"submission_kit_{dom}.json", None)
+    if not kit:
+        pr = (_load(CACHE / f"{dom}.json", {}) or {}).get("profile", {})
+        a = pr.get("address") or {}
+        kit = {"business_name": pr.get("name"), "website": pr.get("website") or f"https://{dom}",
+               "phone": pr.get("phone"), "email": pr.get("email"), "street_address": a.get("streetAddress"),
+               "city": a.get("addressLocality"), "state": a.get("addressRegion"), "postal_code": a.get("postalCode"),
+               "country": a.get("addressCountry"), "social_profiles": pr.get("same_as") or [], "logo": pr.get("logo"),
+               "descriptions": {"short_160": pr.get("description")}}
+    if not kit.get("business_name"):
+        return {"error": "No business details yet. Run scan_site or build_submission_kit first."}
+    site = kit.get("website") or f"https://{dom}"
+    schema: dict[str, Any] = {"@context": "https://schema.org", "@type": business_type,
+                              "@id": site.rstrip("/") + "/#business", "name": kit["business_name"], "url": site}
+    desc = (kit.get("descriptions") or {}).get("short_160")
+    for k, v in (("description", desc), ("telephone", kit.get("phone_e164") or kit.get("phone")),
+                 ("email", kit.get("email")), ("logo", kit.get("logo")), ("image", kit.get("logo")),
+                 ("foundingDate", kit.get("founded")), ("priceRange", price_range or None)):
+        if v and not _is_placeholder(v):
+            schema[k] = v
+    addr = {k: v for k, v in (("streetAddress", kit.get("street_address")), ("addressLocality", kit.get("city")),
+                              ("addressRegion", kit.get("state")), ("postalCode", kit.get("postal_code")),
+                              ("addressCountry", "IN" if (kit.get("country") or "").lower() in ("india", "in") else kit.get("country")))
+            if v and not _is_placeholder(v)}
+    if addr:
+        schema["address"] = {"@type": "PostalAddress", **addr}
+    if area_served or kit.get("city"):
+        schema["areaServed"] = area_served or kit.get("country") or kit.get("city")
+    if kit.get("social_profiles"):
+        schema["sameAs"] = kit["social_profiles"]
+    street_label = ("street address (required by Google for LocalBusiness results)"
+                    if business_type not in ("Organization", "Corporation") else "street address")
+    missing = [f for f, ok in ((street_label, "streetAddress" in addr), ("postal code", "postalCode" in addr),
+                               ("phone", "telephone" in schema), ("logo", "logo" in schema),
+                               ("sameAs social links", "sameAs" in schema)) if not ok]
+    tag = '<script type="application/ld+json">\n' + json.dumps(schema, indent=2, ensure_ascii=False) + "\n</script>"
+    return {"script_tag": tag, "missing": missing,
+            "where_to_paste": "Inside <head> of index.html (Vite/static), app/layout.tsx via <script> (Next.js), "
+                              "or base.html (Django). Use it once site-wide, not on every component.",
+            "validate_at": "https://validator.schema.org/ and https://search.google.com/test/rich-results"}
 
 
 @mcp.tool()
 def draft_outreach(template: str, my_site: str, my_name: str, target_site: str = "",
                    contact_name: str = "", topic: str = "", my_page: str = "", broken_url: str = "",
-                   extra: str = "") -> dict:
-    """Draft a personalised outreach email. template: guest_post | resource_page | broken_link |
-    unlinked_mention | partner | testimonial | local_press. Returns subject + body to edit and send
-    yourself (this tool never sends email)."""
+                   proof: list[str] | None = None, hook: str = "", extra: str = "") -> dict:
+    """Draft an outreach email to edit and send yourself (never sends anything).
+    template: guest_post | list_inclusion (for "top N companies" roundups) | resource_page | broken_link |
+    unlinked_mention | partner | testimonial | local_press.
+    topic: a noun phrase, e.g. "choosing an ERP for a small factory" or "Nashik startup opens AI lab".
+    proof: real facts only, e.g. ["Built ERP for 3 Nashik manufacturers", "Founded 2025"].
+    hook: ONE specific sentence about their page so it doesn't read as a mass email.
+    Returns warnings when something required is missing - fix them before sending."""
     t = OUTREACH_TEMPLATES.get(template)
     if not t:
         return {"error": f"Unknown template. Use one of: {', '.join(OUTREACH_TEMPLATES)}"}
+    given = {"topic": topic, "my_page": my_page, "broken_url": broken_url, "proof": proof}
+    warnings = [f"'{k}' is needed for {template} - pass it (see the tool description)." for k in t["needs"] if not given.get(k)]
+    for k, v in {"topic": topic, "contact_name": contact_name, "target_site": target_site, "hook": hook,
+                 "my_page": my_page}.items():
+        if v and _is_placeholder(v):
+            warnings.append(f"'{k}' looks like a placeholder ({v!r}).")
+    if topic and re.match(r"(?i)(top|best)\b", topic) and template == "local_press":
+        warnings.append("topic reads like a list title, not news - use something like 'local firm launches X'.")
+    if not hook:
+        warnings.append("No hook: add one sentence about their specific page, otherwise it reads like spam.")
+    if not contact_name:
+        warnings.append("No contact name - try the site's About/Team page; 'Hi there' gets fewer replies.")
+    proof_txt = ("\n".join(f"- {x}" for x in (proof or []) if x and not _is_placeholder(x)) + "\n") if proof else ""
     vals = {"my_site": my_site, "my_name": my_name, "target_site": target_site or "your site",
-            "contact": contact_name or "there", "topic": topic or "a topic your readers care about",
-            "my_page": my_page or my_site, "broken_url": broken_url or "[broken link]", "extra": extra}
-    return {"subject": t["subject"].format(**vals), "body": t["body"].format(**vals).strip(),
-            "tips": ["Personalise the first line with something specific from their site.",
-                     "Send from your domain email, keep it under 150 words, follow up once after 5-7 days."]}
+            "contact": contact_name or "there", "topic": topic or "[topic]",
+            "my_page": my_page or my_site, "broken_url": broken_url or "[broken link]",
+            "proof": proof_txt, "hook": hook or "[One sentence about their specific page.]"}
+    body = t["body"].format(**vals).strip()
+    if extra:
+        body = body.replace(f"\n{my_name}", f"\n{extra.strip()}\n\n{my_name}", 1)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return {"subject": t["subject"].format(**vals), "body": body, "warnings": warnings,
+            "ready_to_send": not warnings,
+            "tips": ["Send from your domain email (not Gmail), under 150 words.",
+                     "Follow up once after 5-7 days, then stop."]}
 
 
 # ----------------------------------------------------------------- tools: verification & tracking
@@ -646,11 +1057,18 @@ def tracker_add(url: str, kind: str, site: str, notes: str = "", contact: str = 
     tr = _load(TRACKER, [])
     if any(_norm(e["url"]) == _norm(url) and _domain(e["site"]) == _domain(site) for e in tr):
         return {"ok": False, "msg": "Already tracked."}
+    same_site = [e for e in tr if _domain(e["url"]) == _domain(url) and _domain(e["site"]) == _domain(site)]
+    if same_site and kind in ("directory", "citation", "profile"):
+        return {"ok": False, "msg": f"{_domain(url)} is already tracked as #{same_site[0]['id']} - one profile per "
+                                    "directory is enough. Use tracker_update to add a note instead."}
     e = {"id": (max([x["id"] for x in tr], default=0) + 1), "url": url, "kind": kind, "site": _domain(site),
          "status": status, "contact": contact, "notes": notes, "added": _now(), "updated": _now()}
     tr.append(e)
     _save(TRACKER, tr)
-    return {"ok": True, "entry": e}
+    res = {"ok": True, "entry": e}
+    if same_site:
+        res["warning"] = f"Same site already tracked as #{same_site[0]['id']} - make sure this is a separate opportunity."
+    return res
 
 
 @mcp.tool()
