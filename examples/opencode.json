@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "backlinks": {
+      "type": "local",
+      "command": ["/Users/YOU/adys-backlinks-mcp/.venv/bin/backlink-mcp"],
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,23 @@
+[project]
+name = "backlink-mcp"
+version = "1.0.0"
+description = "MCP server that scans your site/code and helps you build real, white-hat backlinks"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Aditya Badgujar" }]
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.2", "httpx>=0.27", "beautifulsoup4>=4.12", "lxml>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/RandomKid24/adys-backlinks-mcp"
+
+[project.scripts]
+backlink-mcp = "backlink_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["backlink_mcp"]
