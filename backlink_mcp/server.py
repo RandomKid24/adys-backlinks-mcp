@@ -229,13 +229,26 @@ def _parse_page(url: str, html: str) -> dict:
         if t.get("type") != "application/ld+json":
             t.decompose()
     text = " ".join(soup.get_text(" ").split())
+    blocks, heading = [], None
+    for el in soup.find_all(["h1", "h2", "h3", "h4", "p", "li"]):
+        if el.find_parent(["nav", "header", "footer", "aside", "form"]):
+            continue
+        t = " ".join(el.get_text(" ").split())
+        if el.name in ("h1", "h2", "h3", "h4"):
+            heading = t[:120] or heading
+        elif len(t) >= 40 and not (el.name == "li" and el.find("p")):  # real body copy, not menu items
+            blocks.append({"section": heading, "text": t[:1200], "tag": el.name,
+                           "links_inside": len(el.find_all("a", href=True))})
+        if len(blocks) >= 120:
+            break
     links = []
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if href.startswith(("mailto:", "tel:", "javascript:", "#")):
             continue
         links.append({"href": _norm(urljoin(url, href)), "text": " ".join(a.get_text(" ").split())[:80],
-                      "rel": " ".join(a.get("rel", []))})
+                      "rel": " ".join(a.get("rel", [])),
+                      "in_content": a.find_parent(["nav", "header", "footer", "aside"]) is None})
     canon = soup.find("link", rel="canonical")
     return {
         "url": url,
@@ -258,6 +271,7 @@ def _parse_page(url: str, html: str) -> dict:
         "jsonld": _jsonld(soup)[:5],
         "links": links,
         "text_sample": text[:4000],
+        "blocks": blocks,
     }
 
 
@@ -412,13 +426,21 @@ async def scan_site(url: str, max_pages: int = 30) -> dict:
 
 
 @mcp.tool()
-def scan_codebase(path: str, max_files: int = 3000) -> dict:
+def scan_codebase(path: str, max_files: int = 3000, site: str = "") -> dict:
     """Scan a local website project (React/Vite, Next.js, Django, plain HTML, etc.): detect framework,
     routes/pages, meta tags, sitemap/robots, structured data, contact details and external links.
-    Use when the site isn't live yet or to find what to fix in code."""
+    Use when the site isn't live yet or to find what to fix in code. Pass site= (e.g. "example.com") to remember
+    this folder for that project, so internal_link_suggestions and content_plan can point to exact files/lines."""
     root = Path(path).expanduser().resolve()
     if not root.is_dir():
         return {"error": f"Not a directory: {root}"}
+    if site:
+        projects = _projects()
+        pr = projects.get(_domain(site), {"site": _domain(site), "created": _now()})
+        pr["code_path"] = str(root)
+        pr["updated"] = _now()
+        projects[_domain(site)] = pr
+        _save(PROJECTS, projects)
     framework, deps = [], {}
     pkg = root / "package.json"
     if pkg.exists():
@@ -609,46 +631,333 @@ def seo_link_audit(domain: str) -> dict:
     }
 
 
+GENERIC_ANCHORS = {"software", "services", "service", "solutions", "solution", "company", "business", "businesses",
+                   "team", "products", "product", "system", "systems", "app", "apps", "website", "online", "quality",
+                   "best", "work", "help", "support", "more", "click", "here", "read", "learn", "page", "home"}
+SERVICE_SECTION_RE = re.compile(r"what we (do|build|offer|make)|services|solutions|products|our work|how we help|expertise", re.I)
+
+TEXT_EXT = {".html", ".htm", ".jsx", ".tsx", ".js", ".ts", ".vue", ".svelte", ".astro", ".md", ".mdx", ".php",
+            ".py", ".json", ".yaml", ".yml", ".txt", ".liquid", ".hbs", ".njk", ".ejs"}
+
+
+def _code_files(root: str | None, limit: int = 4000) -> list[Path]:
+    if not root or not Path(root).is_dir():
+        return []
+    out = []
+    for f in Path(root).rglob("*"):
+        if len(out) >= limit:
+            break
+        if (f.is_file() and f.suffix.lower() in TEXT_EXT and not any(part in SKIP_DIRS for part in f.parts)
+                and f.name not in SKIP_FILES and not f.name.endswith((".min.js", ".map", ".d.ts"))
+                and f.stat().st_size < 600_000):
+            out.append(f)
+    return out
+
+
+def _find_in_code(files: list[Path], root: str | None, text: str, anchor: str = "") -> list[dict]:
+    """Locate a sentence from the live page in the source code. Tries a few word-runs around the anchor,
+    allowing any whitespace/JSX line breaks between words. Returns [{file, line}]."""
+    if not files or not text:
+        return []
+    words = re.findall(r"[\w'’-]+", text)
+    if len(words) < 3:
+        return []
+    idx = 0
+    if anchor:
+        aw = anchor.lower().split()
+        for i in range(len(words)):
+            if [w.lower() for w in words[i:i + len(aw)]] == aw:
+                idx = i
+                break
+    runs = []
+    for size in (7, 5, 4):
+        start = max(0, min(idx - 2, len(words) - size))
+        if len(words) >= size:
+            runs.append(words[start:start + size])
+    if len(words) >= 5:
+        runs.append(words[:5])
+    for run in runs:
+        pat = re.compile(r"[\s\S]{0,12}?".join(re.escape(w) for w in run), re.I)
+        hits = []
+        for f in files:
+            try:
+                src = f.read_text("utf-8", errors="ignore")
+            except OSError:
+                continue
+            m = pat.search(src)
+            if m:
+                hits.append({"file": str(f.relative_to(root)) if root else str(f),
+                             "line": src.count("\n", 0, m.start()) + 1})
+            if len(hits) >= 3:
+                break
+        if hits:
+            return hits
+    return []
+
+
+def _sentences(text: str) -> list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"“(])", text) if len(x.strip()) > 15]
+
+
+def _path(url: str) -> str:
+    p = urlparse(url)
+    return (p.path or "/") + (f"?{p.query}" if p.query else "")
+
+
+def _page_kind(url: str, page: dict) -> str:
+    t = (_path(url) + " " + (page.get("title") or "") + " " + " ".join(page.get("h1") or [])).lower()
+    if _path(url) in ("/", ""):
+        return "home"
+    for kind, keys in (("contact", ("contact", "get in touch", "reach us")), ("about", ("about", "our story", "team")),
+                       ("pricing", ("pricing", "plans", "price")), ("careers", ("career", "jobs", "hiring")),
+                       ("blog_index", ("/blog", "/insights", "/news", "/articles", "/resources")),
+                       ("case_study", ("case-stud", "case stud", "portfolio", "/work")),
+                       ("faq", ("faq", "questions"))):
+        if any(k in t for k in keys):
+            if kind == "blog_index" and len([x for x in _path(url).split("/") if x]) > 1:
+                return "article"
+            return kind
+    if any(k in t for k in ("/blog/", "/insights/", "/news/", "/article", "how to", "guide", "what is", "why ")):
+        return "article"
+    return "service"
+
+
 @mcp.tool()
 def internal_link_suggestions(domain: str, limit: int = 20) -> list[dict]:
-    """Suggest internal links (source page -> target page, anchor text) for weakly-linked pages, based on
-    keyword overlap from the cached scan. Internal linking passes backlink equity to deeper pages."""
+    """Suggest in-content (contextual) internal links for weakly-linked pages and say EXACTLY where to put each:
+    the page, the section heading, the paragraph and sentence, the anchor text, a ready-made edited sentence
+    with the link, and - if the site's code folder is known (scan_codebase with site=, or save_project code_path=)
+    - the file and line to edit. When no existing sentence fits, it proposes a new sentence and the best section
+    to add it to (marked placement="add_sentence"; reword it in your own voice). Run scan_site first."""
     d = _load(CACHE / f"{_domain(domain)}.json", None)
     if not d:
         return [{"error": "No scan cached. Run scan_site first."}]
     pages, dom = d["pages"], d["domain"]
+    if not any(p.get("blocks") for p in pages.values()):
+        return [{"error": "This scan is from an older version without paragraph data. Run scan_site again."}]
+    proj = _project(dom)
+    root = proj.get("code_path")
+    files = _code_files(root)
     inbound = Counter(l["href"] for p in pages.values() for l in p["links"] if _domain(l["href"]) == dom)
-    brand = set(re.findall(r"[a-z]+", (d.get("profile", {}).get("name") or "").lower()))
+    brand = set(re.findall(r"[a-z]+", (d.get("profile", {}).get("name") or "").lower())) | _brand_words(None, dom)
     title_words = Counter(w for p in pages.values() for w in set(re.findall(r"[a-z]+", (p["title"] or "").lower())))
     common = {w for w, c in title_words.items() if c > len(pages) * 0.6} if len(pages) >= 5 else set()
-    brand |= _brand_words(None, dom)
-    out = []
+    out, used_sentences = [], set()
     for tu, tp in sorted(pages.items(), key=lambda kv: inbound[kv[0]]):
         if len(out) >= limit:
             break
+        if _page_kind(tu, tp) == "home" or (_page_kind(tu, tp) in ("contact", "careers") and inbound[tu] >= 2):
+            continue
         src_text = " ".join(filter(None, [tp["title"], *tp["h1"], *tp.get("h2", [])[:3], tp["meta_description"]]))
-        kws = [k for k in _keywords(src_text, 12, brand | common) if len(k) > 3]
-        # multi-word phrases make better, more descriptive anchors - try them first
-        kws = sorted(kws, key=lambda k: -len(k.split()))[:6]
-        linked_from = {su for su, sp in pages.items() if any(l["href"] == tu for l in sp["links"])}
-        picks = 0
+        kws = [k for k in _keywords(src_text, 12, brand | common)
+               if (len(k) > 3 or k in ACRONYMS) and not (len(k.split()) == 1 and k in GENERIC_ANCHORS)]
+        kws = sorted(kws, key=lambda k: (-len(k.split()), -len(k)))[:6]  # descriptive multi-word anchors first
+        if not kws:
+            continue
+        # menu/footer links don't count - a link inside body copy is what passes relevance
+        linked_from = {su for su, sp in pages.items()
+                       if any(l["href"] == tu and l.get("in_content", True) for l in sp["links"])}
+        picks, best_fallback = 0, None
         for su, sp in sorted(pages.items(), key=lambda kv: -inbound[kv[0]]):  # strongest pages first
             if su == tu or su in linked_from or picks >= 3:
                 continue
-            txt = sp["text_sample"].lower()
-            hit = next((k for k in kws if re.search(rf"\b{re.escape(k)}\b", txt)), None)
-            if hit:
-                out.append({"from": su, "to": tu, "anchor": hit, "target_inbound_now": inbound[tu],
-                            "source_strength": inbound[su]})
+            found, shared = None, None
+            # prefer paragraphs that don't already have links in them, then any paragraph
+            for blk in sorted(sp.get("blocks", []), key=lambda b: (b["links_inside"] > 1, b["tag"] != "p")):
+                for k in kws:
+                    m = re.search(rf"\b{re.escape(k)}\b", blk["text"], re.I)
+                    if m:
+                        sent = next((x for x in _sentences(blk["text"]) if m.group(0).lower() in x.lower()), blk["text"])
+                        if (su, sent) in used_sentences:  # prefer a sentence that isn't getting another link
+                            shared = shared or (blk, m.group(0), sent)
+                            continue
+                        found = (blk, m.group(0), sent)
+                        break
+                if found:
+                    break
+            found = found or shared
+            if found:
+                blk, anchor, sent = found
+                is_shared = (su, sent) in used_sentences
+                used_sentences.add((su, sent))
+                linked = re.sub(re.escape(anchor), f'<a href="{_path(tu)}">{anchor}</a>', sent, count=1)
+                out.append({
+                    "placement": "existing_text",
+                    "add_link_on_page": su, "link_to": tu, "anchor_text": anchor,
+                    "section": blk["section"] or "(top of page)",
+                    "paragraph": _cut(blk["text"], 320),
+                    "sentence": sent,
+                    "sentence_with_link": linked,
+                    "code_location": _find_in_code(files, root, sent, anchor),
+                    "target_inbound_links_now": inbound[tu],
+                    "note": ("This sentence also gets another suggested link - keep the more important one or "
+                             "split the sentence." if is_shared else
+                             "Already in the menu, but a link inside body text is stronger." if su in
+                             {x for x, xp in pages.items() if any(l["href"] == tu for l in xp["links"])} else None),
+                })
                 picks += 1
-    return out[:limit]
+            elif best_fallback is None and sp.get("blocks"):
+                # the most related paragraph on this page - or its services-type section - for a new sentence
+                tw = set(" ".join(kws).split()) - GENERIC_ANCHORS
+                score = lambda b: len(tw & set(re.findall(r"[a-z]+", b["text"].lower())))  # noqa: E731
+                blk = max(sp["blocks"], key=score)
+                if score(blk) >= 1:
+                    best_fallback = (su, blk)
+                elif _page_kind(su, sp) in ("home", "service", "about"):
+                    svc = [b for b in sp["blocks"] if b.get("section") and SERVICE_SECTION_RE.search(b["section"])]
+                    if svc:
+                        best_fallback = (su, svc[-1])
+        if picks == 0 and best_fallback and _page_kind(tu, tp) in ("service", "article", "case_study", "pricing"):
+            su, blk = best_fallback
+            kind = _page_kind(tu, tp)
+            label = (tp["h1"][0] if tp.get("h1") else (tp["title"] or kws[0]).split("|")[0].strip())
+            label = label[0].lower() + label[1:] if kind == "service" and label[:2].isalpha() and not label[:2].isupper() else label
+            sentence = (f'For a deeper look, read our guide: <a href="{_path(tu)}">{label}</a>.' if kind == "article"
+                        else f'See how we help with <a href="{_path(tu)}">{label}</a>.' if kind == "service"
+                        else f'You can find more on our <a href="{_path(tu)}">{label}</a> page.')
+            out.append({
+                "placement": "add_sentence",
+                "add_link_on_page": su, "link_to": tu, "anchor_text": label,
+                "section": blk["section"] or "(top of page)",
+                "add_after_paragraph": _cut(blk["text"], 320),
+                "suggested_sentence": sentence,
+                "note": "No existing sentence mentions this topic - add this line (reworded in your voice) "
+                        "at the end of the paragraph above.",
+                "code_location": _find_in_code(files, root, blk["text"]),
+                "target_inbound_links_now": inbound[tu],
+            })
+    if not root:
+        out.append({"tip": "Run scan_codebase with site= (or save_project code_path=) to get the exact file and line for each edit."})
+    return out[:limit + (0 if root else 1)]
+
+
+SECTION_PLANS = {
+    "home": [("What we do", "2-3 sentences: who you help and the main result you deliver."),
+             ("Services", "One short paragraph per main service, each linking to its own page."),
+             ("Why choose us", "3-4 concrete reasons with numbers or proof (years, projects, reviews)."),
+             ("Recent work / case studies", "1-2 short examples with the client's industry and outcome."),
+             ("Areas we serve", "Your city/region and the places you work in (helps local SEO)."),
+             ("FAQ", "3-5 questions customers actually ask, with short answers.")],
+    "service": [("What it is", "Plain-language explanation of the service/product and who it's for."),
+                ("Problems it solves", "The pain points of the customer, in their words."),
+                ("Features / what's included", "Bulleted list, each with one line of explanation."),
+                ("How it works / our process", "3-5 steps from first call to delivery."),
+                ("Results / example", "A real example or case study with numbers if you have them."),
+                ("FAQ", "Pricing range, timelines, support, integrations - whatever people ask."),
+                ("Call to action", "One clear next step with a link to the contact page.")],
+    "contact": [("Contact details", "Business name, full street address, phone and email as visible text "
+                                    "(exactly matching your directory listings)."),
+                ("Opening hours", "Days and times, including weekends/holidays."),
+                ("How to find us", "Landmark directions, parking, and an embedded map."),
+                ("What happens next", "What you'll do after they get in touch and how fast you reply."),
+                ("Areas we serve", "City/region served, for local search.")],
+    "about": [("Our story", "When and why the business started, in a few honest sentences."),
+              ("What we believe / how we work", "Your approach, in concrete terms."),
+              ("Team", "Founder/key people with a line each (photos help trust)."),
+              ("Milestones / proof", "Clients served, projects, awards, certifications - real facts only."),
+              ("Where we are", "Location and areas served, linking to the contact page.")],
+    "blog_index": [("Intro", "2-3 sentences on what readers will learn here and who it's for."),
+                   ("Topic sections", "Group posts under 2-4 topic headings with a one-line summary each."),
+                   ("Start here", "Link your 2-3 best guides with a sentence on why to read each.")],
+    "article": [("Key takeaways", "A 3-bullet summary at the top."),
+                ("Step-by-step / examples", "Practical detail and real examples - the part people link to."),
+                ("Common mistakes", "What to avoid and why."),
+                ("Related services", "A short paragraph linking to the matching service page."),
+                ("FAQ", "2-4 follow-up questions.")],
+    "case_study": [("The client", "Industry, size, location."), ("The challenge", "What wasn't working."),
+                   ("What we did", "Approach and solution."), ("Results", "Numbers: time saved, revenue, errors cut."),
+                   ("Quote", "A real quote from the client, with permission.")],
+    "pricing": [("What's included", "Per plan, in plain words."), ("How pricing works", "What changes the price."),
+                ("FAQ", "Payment terms, contracts, refunds, support.")],
+    "faq": [("Grouped questions", "Group by topic (pricing, process, support) with 3-5 Q&As each.")],
+    "careers": [("Why work here", "Culture and benefits, honestly."), ("Open roles", "Each role with a short summary.")],
+}
+TARGET_WORDS = {"home": 500, "service": 700, "contact": 250, "about": 400, "blog_index": 300, "article": 1000,
+                "case_study": 500, "pricing": 350, "faq": 400, "careers": 300}
+
+
+@mcp.tool()
+def content_plan(domain: str, url: str = "", max_pages: int = 8) -> list[dict]:
+    """Say what text (paragraphs/sections) to ADD to thin or weak pages and WHERE: page type, current vs target
+    word count, the sections it already has, the sections/paragraphs to add (with what to write in each, which
+    keywords fit naturally, and which internal links to include), where to insert them, and the source file if
+    the code folder is known. Pass url= for one page, otherwise the thinnest pages are planned. Run scan_site
+    first. Write the copy in your own words - never keyword-stuff."""
+    d = _load(CACHE / f"{_domain(domain)}.json", None)
+    if not d:
+        return [{"error": "No scan cached. Run scan_site first."}]
+    pages, dom = d["pages"], d["domain"]
+    proj = _project(dom)
+    root = proj.get("code_path")
+    files = _code_files(root)
+    proj_kws = [k for k in (proj.get("keywords") or []) if k]
+    loc = proj.get("location")
+    targets = [(u, p) for u, p in pages.items() if not url or _norm(u) == _norm(url) or _path(u) == _path(url)]
+    if url and not targets:
+        return [{"error": f"{url} isn't in the last scan. Run scan_site again or check the URL."}]
+    scored = []
+    for u, p in targets:
+        kind = _page_kind(u, p)
+        target = TARGET_WORDS.get(kind, 500)
+        if url or p["word_count"] < target * 0.8:
+            scored.append((p["word_count"] / target, u, p, kind, target))
+    out = []
+    for _, u, p, kind, target in sorted(scored)[:max_pages]:
+        have = [h.lower() for h in (p.get("h2") or [])] + [b["section"].lower() for b in p.get("blocks", []) if b.get("section")]
+        page_kws = _keywords(" ".join(filter(None, [p["title"], *p["h1"], p["meta_description"]])), 6,
+                             _brand_words(d.get("profile", {}).get("name"), dom))
+        add = []
+        synonyms = {"faq": ("faq", "frequently asked", "questions"), "team": ("team", "people", "founder"),
+                    "call to action": ("get started", "get in touch", "book", "talk to us")}
+        for heading, what in SECTION_PLANS.get(kind, SECTION_PLANS["service"]):
+            first = heading.lower().split(" / ")[0]
+            keys = synonyms.get(first, (first,))
+            if any(k in h for h in have for k in keys):
+                continue
+            if first == "contact details" and p.get("tel_links") and re.search(r"\d{5,6}|street|road|nagar|ave", p["text_sample"], re.I):
+                continue
+            item = {"heading": heading, "what_to_write": what}
+            if heading in ("Areas we serve", "Where we are") and loc:
+                item["what_to_write"] += f" Mention {loc} naturally."
+            add.append(item)
+        # internal links this page should carry
+        rel_links = []
+        for ou, op in pages.items():
+            if ou == u or any(l["href"] == ou for l in p["links"]):
+                continue
+            if _page_kind(ou, op) in ("service", "article", "case_study") and set(page_kws) & set(
+                    _keywords(" ".join(filter(None, [op["title"], *op["h1"]])), 8)):
+                rel_links.append({"link_to": ou, "suggested_anchor": (op["h1"][0] if op.get("h1") else op["title"])})
+        h1 = p["h1"][0] if p.get("h1") else None
+        last_block = p["blocks"][-1]["text"] if p.get("blocks") else None
+        out.append({
+            "page": u, "page_type": kind, "words_now": p["word_count"], "target_words": target,
+            "words_to_add": max(0, target - p["word_count"]),
+            "headings_now": (p.get("h1") or []) + (p.get("h2") or []),
+            "sections_to_add": add,
+            "keywords_to_use_naturally": [] if kind in ("contact", "careers") else
+            list(dict.fromkeys(page_kws[:3] + proj_kws[:2]))[:4],
+            "where_to_insert": ("Add the new sections between the existing content and the footer, in the order "
+                                "listed; keep the main call-to-action last." if p.get("blocks") else
+                                "The page has almost no body text - add these sections under the main heading."),
+            "internal_links_to_include": rel_links[:4],
+            "code_location": _find_in_code(files, root, last_block or h1 or "", "") if (last_block or h1) else [],
+            "rules": ["Write for people first: specific, useful, in your own voice.",
+                      "Use each keyword once or twice where it fits - never stuff.",
+                      "Only real facts (numbers, clients, reviews)."],
+        })
+    if not out:
+        return [{"ok": True, "msg": "No thin pages found - every scanned page meets its target length."}]
+    if not root:
+        out.append({"tip": "Run scan_codebase with site= (or save_project code_path=) to get the file for each page."})
+    return out
 
 
 # ----------------------------------------------------------------- tools: opportunities
 @mcp.tool()
 def save_project(site: str, niche: str = "", location: str = "", country: str = "",
                  keywords: list[str] | None = None, competitors: list[str] | None = None,
-                 business_name: str = "", notes: str = "") -> dict:
+                 business_name: str = "", notes: str = "", code_path: str = "") -> dict:
     """Save (or update) a site you're working on - your own or a client's - so every other tool knows its
     niche, location, country, keywords and competitors. Only the fields you pass are changed.
     country: name or code ("India", "IN", "UK", "United States"...)."""
@@ -661,7 +970,8 @@ def save_project(site: str, niche: str = "", location: str = "", country: str = 
                 "known": sorted(COUNTRIES)}
     for k, v in (("niche", niche), ("location", location), ("country", code), ("keywords", keywords),
                  ("competitors", [_domain(c) for c in competitors] if competitors else None),
-                 ("name", business_name), ("notes", notes)):
+                 ("name", business_name), ("notes", notes),
+                 ("code_path", str(Path(code_path).expanduser().resolve()) if code_path else None)):
         if v:
             pr[k] = v
     pr.pop("auto", None)

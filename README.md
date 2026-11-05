@@ -28,6 +28,7 @@ search queries, phone format and schema.
 - [Check it works](#check-it-works)
 - [How to use it (copy-paste prompts)](#how-to-use-it-copy-paste-prompts)
 - [All tools](#all-tools)
+- [Where to add links and text on your pages](#where-to-add-links-and-text-on-your-pages)
 - [Multiple sites and clients](#multiple-sites-and-clients)
 - [Where your data is saved](#where-your-data-is-saved)
 - [Add your own directories and queries](#add-your-own-directories-and-queries)
@@ -44,11 +45,12 @@ search queries, phone format and schema.
        ▼
  1. SCAN      →  business name, phone, address, keywords, pages, broken links
  2. AUDIT     →  a ranked "fix this first" list + ready-to-paste LocalBusiness schema
- 3. FIND      →  directories to join + search queries for guest posts & resource pages
- 4. QUALIFY   →  scores each prospect 0-100, finds the real contact email, picks the right email template
- 5. PREPARE   →  one copy-paste kit (same name/address/phone everywhere) + outreach emails
- 6. TRACK     →  todo → submitted → pitched → live
- 7. VERIFY    →  is the link really there? follow or nofollow? still live next month?
+ 3. CONTENT   →  where to add in-text links (exact sentence + file/line) and what paragraphs thin pages need
+ 4. FIND      →  directories to join + search queries for guest posts & resource pages
+ 5. QUALIFY   →  scores each prospect 0-100, finds the real contact email, picks the right email template
+ 6. PREPARE   →  one copy-paste kit (same name/address/phone everywhere) + outreach emails
+ 7. TRACK     →  todo → submitted → pitched → live
+ 8. VERIFY    →  is the link really there? follow or nofollow? still live next month?
 ```
 
 ---
@@ -279,7 +281,7 @@ You should get your business name, pages and keywords back.
 npx @modelcontextprotocol/inspector ~/adys-backlinks-mcp/.venv/bin/backlink-mcp
 ```
 
-Click **Connect**, then **Tools → List Tools**. You should see **18 tools**. Run `scan_site` to test.
+Click **Connect**, then **Tools → List Tools**. You should see **19 tools**. Run `scan_site` to test.
 
 **Option C: quick terminal check**
 
@@ -310,9 +312,15 @@ After this, every other tool remembers the niche, city, country and keywords. Ju
 Use backlinks to scan https://example.com (max 50 pages), then run seo_link_audit and internal_link_suggestions. Show me the priority_fixes list.
 ```
 
-**3. Check the code (optional, if you have it)**
+**3. Connect the code (optional, if you have it)**
 ```
-Use backlinks scan_codebase on /path/to/the/website/code and tell me exactly which files to change for each priority fix.
+Use backlinks scan_codebase on /path/to/the/website/code with site example.com and tell me exactly which files to change for each priority fix.
+```
+Passing `site` remembers the code folder, so the next step can name the exact file and line for every edit.
+
+**3b. Where to add links and text**
+```
+Use backlinks internal_link_suggestions and content_plan for example.com. For each link, show me the page, section, the sentence with the link added, and the file/line. For thin pages, show which sections and paragraphs to add.
 ```
 
 **4. Make the submission kit** (real details only)
@@ -358,6 +366,52 @@ recheck my live links for example.com          ← do this once a month
 
 ---
 
+## Where to add links and text on your pages
+
+Links inside your **body text** (the paragraphs on a page) are called **contextual** or
+**in-content links**. The clickable words are the **anchor text**. These links pass far more value
+than links in the menu or footer. The MCP tells you exactly where to put them, and what text to add
+when a page is too short.
+
+**`internal_link_suggestions`: where to put each link**
+
+```json
+{
+  "placement": "existing_text",
+  "add_link_on_page": "https://example.com/",
+  "link_to": "https://example.com/product/erp",
+  "anchor_text": "manufacturing ERP",
+  "section": "What we build",
+  "sentence": "We design manufacturing ERP systems that replace messy spreadsheets...",
+  "sentence_with_link": "We design <a href=\"/product/erp\">manufacturing ERP</a> systems that replace messy spreadsheets...",
+  "code_location": [{"file": "src/pages/Home.tsx", "line": 6}]
+}
+```
+
+- `existing_text`: the words are already on the page. Just wrap them in a link.
+- `add_sentence`: nothing on the page mentions the topic yet. You get a short sentence to add (reword
+  it in your own voice) and the paragraph to add it after.
+- `code_location`: the file and line to edit. Works with React/JSX (even when text is split across
+  lines), Next.js, Vue, Svelte, Astro, HTML, Markdown and Django templates. It needs
+  `scan_codebase ... site=example.com` (or `save_project ... code_path=...`) run once.
+- Menu and footer links don't count as "already linked", because a link inside the paragraph is stronger.
+- It never suggests vague anchors like "click here" or a lone "software", and it adds at most one link per sentence where possible.
+
+**`content_plan`: what paragraphs to add to thin pages**
+
+For each short page, it gives:
+- the page type (home, service, contact, about, article, case study, pricing, FAQ…)
+- words now vs. the target length
+- the **sections to add**, each with what to write in it (e.g. a contact page gets "Contact details",
+  "Opening hours", "How to find us", "What happens next" and "Areas we serve")
+- keywords to work in naturally (once or twice, never stuffed)
+- internal links the new text should include
+- where to insert it, and which file to edit
+
+Ask for one page with `content_plan for example.com url /contact`.
+
+---
+
 ## Multiple sites and clients
 
 Every site is its own **project**, so one install handles your site and every client's:
@@ -381,10 +435,11 @@ list my backlink projects
 | Tool | What it does |
 |---|---|
 | `scan_site` | Crawls your live site (follows `robots.txt`, reads `sitemap.xml`). Finds business name, phone, email, address, socials, keywords, page SEO data and broken links. Separates truly broken links from bot-blocked ones (LinkedIn, Instagram…) and flags JavaScript-only pages. |
-| `scan_codebase` | Reads a local project (Next.js, React/Vite, Django, FastAPI, plain HTML…). Finds routes, meta tags, sitemap/robots, structured data, contact info and which file holds each social link. Flags mixed-case routes (`/About` vs `/about`), inconsistent LinkedIn URLs and missing prerendering. Ignores lockfiles and minified bundles. |
+| `scan_codebase` | (Pass `site=` to remember the folder for that project.) Reads a local project (Next.js, React/Vite, Django, FastAPI, plain HTML…). Finds routes, meta tags, sitemap/robots, structured data, contact info and which file holds each social link. Flags mixed-case routes (`/About` vs `/about`), inconsistent LinkedIn URLs and missing prerendering. Ignores lockfiles and minified bundles. |
 | `seo_link_audit` | Returns a ranked `priority_fixes` list (most important first): noindex, broken links (with how many pages each is on), missing LocalBusiness schema / street address, JS-only pages, sitemap, canonicals, thin pages, weak internal links. |
-| `internal_link_suggestions` | Suggests "link from page A to page B with this anchor text" for weakly linked pages. Prefers descriptive multi-word anchors and your strongest pages as sources. |
-| `save_project` | Saves a site (yours or a client's) with its niche, location, country, keywords and competitors, so every other tool uses them. |
+| `internal_link_suggestions` | Says exactly where to add in-text links: page, section, paragraph, sentence, anchor text, the sentence with the link already added, and the **file and line** in your code. If no sentence fits, it suggests a new one and where to put it. |
+| `content_plan` | For thin pages: which sections and paragraphs to add, what to write in each, keywords to use naturally, links to include, where to insert them, and which file to edit. |
+| `save_project` | Saves a site (yours or a client's) with its niche, location, country, keywords, competitors and code folder, so every other tool uses them. |
 | `list_projects` | Lists all your sites with niche, location, country, tracker progress and whether a kit is saved. |
 | `find_opportunities` | Lists directories and citation sites for the niche and country, plus ready search queries for roundups, local lists, guest posts, resource pages, podcasts, partners and competitor mentions. Pass `site=` to use a saved project. |
 | `add_custom_directory` | Adds your own directory (optionally only for one city). It's saved to `custom.json` and survives updates. |
@@ -486,6 +541,8 @@ Your entries win over built-ins with the same name. To change the built-in lists
 | SSL certificate error during scans (Mac) | Run `/Applications/Python\ 3*/Install\ Certificates.command` |
 | Scan finds 0 pages | The site blocks bots or is client-side only. Use `scan_codebase` on the project folder instead. |
 | Prospect says `check_manually` | That site blocks bots. It's not a bad site. Open it yourself or ask Claude to read it with web fetch. |
+| `internal_link_suggestions` says "older version" | Run `scan_site` again. Paragraph data was added in 1.3.0. |
+| No `code_location` in suggestions | Run `scan_codebase` with `site=` once, or `save_project` with `code_path=`. If it's still empty, that text comes from a CMS or database, not the code. |
 | `find_opportunities` shows only general sites | No country was set, or the niche word wasn't recognised. Run `save_project` with a country and a common niche word (e.g. "dentist"), or add your own with `add_custom_directory`. |
 | `Unknown country` | Use a name or code: `India`/`IN`, `UK`/`GB`, `US`/`USA`, `UAE`/`AE`, `Australia`/`AU`… |
 | Kit says `ready_to_submit: false` | Look at `needs_review`. Usually a missing street address or PIN code. |

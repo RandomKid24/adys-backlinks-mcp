@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0: where to add links and text
+
+### Added
+- `internal_link_suggestions` now says exactly **where** each in-content link goes: the page, section heading, paragraph, sentence, anchor text, a ready `sentence_with_link`, and the **file and line** in your code. When no sentence fits, it proposes a new one (`placement: "add_sentence"`) and the paragraph to add it after.
+- `content_plan` tool: for thin pages, the sections and paragraphs to add (by page type: home, service, contact, about, article, case study, pricing, FAQ, careers), what to write in each, keywords to use naturally, internal links to include, target length, and the file to edit.
+- `scan_codebase(site=...)` and `save_project(code_path=...)` remember a project's code folder.
+- Scans now store body paragraphs with their section heading (re-run `scan_site` after updating).
+
+### Changed
+- Menu/header/footer links no longer count as "already linked". Only links inside body text do.
+- Anchors can be short acronyms (ERP, CRM, HRMS). Vague single words ("software", "services", "click here") are never used.
+- The homepage is never a link target, at most one new link per sentence where possible, and "add a sentence" is only suggested for service, article, case study and pricing pages.
+
+
 ## 1.2.0: works for any business, any country, many sites
 
 ### Added
