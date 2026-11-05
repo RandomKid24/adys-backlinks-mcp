@@ -626,7 +626,7 @@ def scan_codebase(path: str, max_files: int = 3000, site: str = "") -> dict:
         if f.stat().st_size > 800_000:
             continue
         n += 1
-        rel = str(f.relative_to(root))
+        rel = f.relative_to(root).as_posix()
         name = f.name.lower()
         if "sitemap" in name:
             sitemap.append(rel)
@@ -935,7 +935,7 @@ def _find_in_code(files: list[Path], root: str | None, text: str, anchor: str = 
                 continue
             m = pat.search(src)
             if m:
-                hits.append({"file": str(f.relative_to(root)) if root else str(f),
+                hits.append({"file": f.relative_to(root).as_posix() if root else str(f),
                              "line": src.count("\n", 0, m.start()) + 1})
             if len(hits) >= 3:
                 break
