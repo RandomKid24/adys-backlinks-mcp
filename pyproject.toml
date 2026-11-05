@@ -1,13 +1,17 @@
 [project]
 name = "backlink-mcp"
-version = "1.3.0"
-description = "MCP server that scans your site/code and helps you build real, white-hat backlinks"
+version = "2.0.0"
+description = "MCP server that audits any website (or its code) and helps build real, white-hat backlinks - for any business, any country, many sites"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Aditya Badgujar" }]
 requires-python = ">=3.10"
 dependencies = ["mcp>=1.2", "httpx>=0.27", "beautifulsoup4>=4.12", "lxml>=5.0"]
+
+[project.optional-dependencies]
+render = ["playwright>=1.40"]
+dev = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/RandomKid24/adys-backlinks-mcp"

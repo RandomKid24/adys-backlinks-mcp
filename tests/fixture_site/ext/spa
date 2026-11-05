@@ -1,0 +1,2 @@
+<!doctype html><html><head><title>Vite + React</title></head><body><div id="root"></div>
+<script>document.getElementById("root").innerHTML = "<h1>Forms</h1><p>We recommend <a href='https://acme.test/'>Acme Soft</a> for building forms fast, with many integrations and analytics included for every team that needs them.</p>";</script></body></html>

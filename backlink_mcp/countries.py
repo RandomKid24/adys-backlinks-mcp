@@ -127,3 +127,10 @@ def format_phone(raw: str | None, country: str | None) -> tuple[str | None, str 
         groups = ([head[:first]] + [head[i:i + 3] for i in range(first, len(head), 3)] if head else []) + [tail]
         disp = f"+{dial} " + " ".join(g for g in groups if g)
     return disp, e164
+
+
+CURRENCY = {"IN": "INR", "US": "USD", "CA": "CAD", "GB": "GBP", "IE": "EUR", "AU": "AUD", "NZ": "NZD", "AE": "AED",
+            "SA": "SAR", "QA": "QAR", "SG": "SGD", "MY": "MYR", "PH": "PHP", "ID": "IDR", "TH": "THB", "VN": "VND",
+            "JP": "JPY", "PK": "PKR", "BD": "BDT", "LK": "LKR", "NP": "NPR", "DE": "EUR", "FR": "EUR", "ES": "EUR",
+            "IT": "EUR", "NL": "EUR", "BE": "EUR", "PT": "EUR", "CH": "CHF", "SE": "SEK", "PL": "PLN", "ZA": "ZAR",
+            "NG": "NGN", "KE": "KES", "EG": "EGP", "BR": "BRL", "MX": "MXN"}

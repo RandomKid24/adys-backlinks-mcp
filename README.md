@@ -1,13 +1,25 @@
 # Ady's Backlinks MCP
 
-An MCP server that lets **Claude** scan a website (or its code) and help build **real backlinks**.
-It finds directories to list on, finds sites to pitch, writes the outreach emails, checks links are
-live, and tracks everything.
+[![CI](https://github.com/RandomKid24/adys-backlinks-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/RandomKid24/adys-backlinks-mcp/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-**Works for any business, in any country, and for as many sites as you like:** your own site and
-all your clients' sites, each saved as its own project. A dentist in Austin, a plumber in Manchester,
-a software company in Nashik and a real estate agency in Dubai each get their own local directories,
-search queries, phone format and schema.
+An MCP server that turns **Claude** into an SEO and link-building assistant. Point it at a website (or
+its code) and it:
+
+- **audits** the site and ranks what to fix first, with a 0–100 health score
+- shows **exactly where to add links and text**: the page, the sentence, and the file and line in your code
+- writes ready-to-paste **schema** for local businesses and SaaS products
+- finds **where to get backlinks**: about 150 directories, plus search queries for lists, guest posts,
+  "competitor alternatives" pages and unlinked brand mentions
+- **scores prospects**, finds the right contact and drafts honest outreach emails
+- **tracks** every link, reminds you to follow up, verifies links are live, and warns when the anchor mix looks unnatural
+- exports a **client-ready HTML report**
+
+**Works for any business, in any country, and for as many sites as you like.** A dentist in Austin, a
+plumber in Manchester, a SaaS product, or a software company in Nashik: each gets its own local
+directories, search queries, phone format and schema. **JavaScript sites** (React/Vite/Vue) are
+crawled properly with an optional headless browser.
 
 > **No spam.** It never auto-posts links (no comment spam, forum spam, PBNs or paid link farms).
 > Google penalises those. It finds the right places and prepares everything; you submit and send.
@@ -17,6 +29,7 @@ search queries, phone format and schema.
 ## Contents
 
 - [What it can do](#what-it-can-do)
+- [JavaScript sites (React, Vite, Vue)](#javascript-sites-react-vite-vue)
 - [Works for any business and country](#works-for-any-business-and-country)
 - [Quick install (1 command)](#quick-install-1-command)
 - [Manual install](#manual-install)
@@ -30,9 +43,12 @@ search queries, phone format and schema.
 - [All tools](#all-tools)
 - [Where to add links and text on your pages](#where-to-add-links-and-text-on-your-pages)
 - [Multiple sites and clients](#multiple-sites-and-clients)
+- [Client reports and daily to-dos](#client-reports-and-daily-to-dos)
+- [Optional: domain authority scores](#optional-domain-authority-scores)
 - [Where your data is saved](#where-your-data-is-saved)
 - [Add your own directories and queries](#add-your-own-directories-and-queries)
 - [Troubleshooting](#troubleshooting)
+- [Development and tests](#development-and-tests)
 - [Uninstall](#uninstall)
 
 ---
@@ -43,27 +59,48 @@ search queries, phone format and schema.
  Your site / code
        │
        ▼
- 1. SCAN      →  business name, phone, address, keywords, pages, broken links
- 2. AUDIT     →  a ranked "fix this first" list + ready-to-paste LocalBusiness schema
+ 1. SCAN      →  crawls the site (renders JS apps), reads sitemaps + robots, finds business details
+ 2. AUDIT     →  health score + ranked fixes: dead buttons, broken links, sitemap/robots problems,
+                 template placeholders, hreflang, canonicals, schema, thin pages, alt text…
  3. CONTENT   →  where to add in-text links (exact sentence + file/line) and what paragraphs thin pages need
- 4. FIND      →  directories to join + search queries for guest posts & resource pages
- 5. QUALIFY   →  scores each prospect 0-100, finds the real contact email, picks the right email template
- 6. PREPARE   →  one copy-paste kit (same name/address/phone everywhere) + outreach emails
- 7. TRACK     →  todo → submitted → pitched → live
- 8. VERIFY    →  is the link really there? follow or nofollow? still live next month?
+ 4. SCHEMA    →  ready-to-paste JSON-LD: LocalBusiness, Organization, SoftwareApplication + pricing, FAQ
+ 5. FIND      →  directories for the niche + country, and search queries for lists, guest posts,
+                 "X alternatives" pages, unlinked mentions, partners, podcasts
+ 6. QUALIFY   →  scores each prospect 0-100, finds the real contact email, picks the right email template
+ 7. PREPARE   →  one copy-paste kit (same name/address/phone everywhere) + honest outreach emails
+ 8. TRACK     →  todo → submitted → pitched → live, with follow-up reminders (and "lost" if a link disappears)
+ 9. MEASURE   →  verify links, follow/nofollow mix, anchor-text health, client HTML report
 ```
+
+---
+
+## JavaScript sites (React, Vite, Vue)
+
+Many modern sites send an empty `<div id="root">` and build the page in the browser. A normal crawler
+sees nothing there. When it detects one, the MCP automatically switches to a headless browser
+(Playwright) so it sees the real pages, text and links. It also flags the site as JS-only, because
+search engines and link-preview bots have the same problem; the fix is prerendering.
+
+It's optional. The installer asks (~150 MB download), or add it later:
+```bash
+~/adys-backlinks-mcp/.venv/bin/pip install -e "~/adys-backlinks-mcp[render]"
+~/adys-backlinks-mcp/.venv/bin/python -m playwright install chromium
+```
+`scan_site` takes `render="auto"` (the default), `"always"` or `"never"`. Without the browser,
+everything else still works.
 
 ---
 
 ## Works for any business and country
 
-**About 135 built-in directories**, picked automatically for the niche and country:
+**About 150 built-in directories**, picked automatically for the niche and country:
 
 | Type | Examples |
 |---|---|
 | Every business | Google Business Profile, Bing Places, Apple Business Connect, LinkedIn, Facebook, Trustpilot, Hotfrog |
 | Local directories | **US** BBB, Yellow Pages, Manta · **UK** Yell, Thomson Local, FreeIndex · **CA** YellowPages.ca · **AU** Yellow Pages, True Local · **NZ** Finda · **IN** Justdial, Sulekha · **AE** Yellow Pages UAE · **DE** Gelbe Seiten, Das Örtliche · **FR** PagesJaunes · **ES** Páginas Amarillas · **IT** PagineGialle · **ZA** Brabys |
-| Software, IT and agencies | Clutch, GoodFirms, DesignRush, G2, Capterra, Product Hunt, GitHub, Wellfound |
+| Software and IT agencies | Clutch, GoodFirms, DesignRush, The Manifest, TechBehemoths |
+| SaaS, dev tools and AI | G2, Capterra, Product Hunt, AlternativeTo, SaaSHub, SourceForge, Indie Hackers, Show HN, DevHunt, Uneed, Peerlist, StackShare, npm, Futurepedia, There's An AI For That, SoftwareSuggest |
 | Trades and home services | Checkatrade, TrustATrader (UK) · Angi, Thumbtack (US) · HomeStars (CA) · hipages (AU) · Houzz Pro, Bark |
 | Healthcare | Zocdoc, Healthgrades (US) · Practo (IN) · RateMDs |
 | Legal | Avvo, Justia, FindLaw (US) · Law Society (UK) · LawRato (IN) |
@@ -74,10 +111,10 @@ search queries, phone format and schema.
 | Manufacturing / B2B | Kompass, Europages, Wer liefert was, Thomasnet, IndiaMART, TradeIndia, Alibaba |
 | Education, events, nonprofits | Niche, GreatSchools, The Knot, Hitched, WedMeGood, Candid, GlobalGiving |
 
-**Niches it understands:** software, SaaS, IT, web/app development, marketing/SEO agency, design,
+**Niches it understands:** software, SaaS, AI tools, APIs and dev tools, CMS, no-code, IT, web/app development, marketing/SEO agency, design,
 startup, manufacturing, industrial, pharma, wholesale, restaurant, cafe, bakery, catering, salon, spa,
-barber, gym, yoga, hotel, resort, travel, clinic, dentist, physio, lawyer/solicitor, real estate,
-plumber, electrician, contractor, builder, roofer, cleaner, interior design, architect, HVAC,
+barber, gym, yoga, hotel, resort, travel, clinic, dentist, vet, pharmacy, physio, lawyer/solicitor, real estate,
+plumber, electrician, contractor, home builder, roofer, cleaner, interior design, architect, HVAC,
 landscaping, school, coaching, tutor, online store, wedding, events, photographer, accountant, tax,
 insurance, car repair, charity/NGO. Something not on the list still works; you just get general
 directories plus anything you add yourself.
@@ -115,8 +152,10 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 The installer:
 1. creates a private Python environment in `.venv` (nothing installed system-wide)
 2. installs the server
-3. adds it to **Claude Desktop** automatically, backing up your old config as `.bak`
-4. adds it to **Claude Code** too, if you have it
+3. asks whether to add [JavaScript rendering](#javascript-sites-react-vite-vue) (say yes if you work with React/Vite/Vue sites).
+   Skip the question with `--render` / `--no-render` (`-Render` / `-NoRender` on Windows).
+4. adds it to **Claude Desktop** automatically, backing up your old config as `.bak`
+5. adds it to **Claude Code** too, if you have it
 
 Then **fully quit Claude Desktop** (Mac: `Cmd + Q`, Windows: tray icon → Quit), reopen it, and you're done.
 
@@ -281,7 +320,7 @@ You should get your business name, pages and keywords back.
 npx @modelcontextprotocol/inspector ~/adys-backlinks-mcp/.venv/bin/backlink-mcp
 ```
 
-Click **Connect**, then **Tools → List Tools**. You should see **19 tools**. Run `scan_site` to test.
+Click **Connect**, then **Tools → List Tools**. You should see **23 tools**. Run `scan_site` to test.
 
 **Option C: quick terminal check**
 
@@ -333,6 +372,10 @@ Leave out anything you don't know yet. The kit will list it under `needs_review`
 ```
 Use backlinks generate_schema for example.com with business_type "Dentist" and add the script tag to the site's <head>.
 ```
+**For a SaaS or app**, use the product schema with real plans:
+```
+Use backlinks generate_schema for example.com with business_type "SoftwareApplication", app_name "Example App", app_category "BusinessApplication", offers [{"name": "Starter", "price": 999, "billing": "per month"}, {"name": "Pro", "price": 2499, "billing": "per month"}].
+```
 Common types: `ProfessionalService`, `LocalBusiness`, `Dentist`, `Physician`, `LegalService`, `Attorney`,
 `RealEstateAgent`, `Plumber`, `Electrician`, `GeneralContractor`, `Restaurant`, `CafeOrCoffeeShop`,
 `Bakery`, `BeautySalon`, `HealthClub`, `Hotel`, `Store`, `AutoRepair`, `AccountingService`,
@@ -356,9 +399,16 @@ For each good prospect, use draft_outreach with its recommended_template, my_sit
 Only put **true** facts in `proof` (customers served, years in business, reviews, awards). Skip
 prospects whose template is `signup`: those are just profile sign-ups, no email needed.
 
+**9. Client report**
+```
+Use backlinks export_report for example.com with prepared_by "Your Agency" and client_name "Example Dental", then open it.
+```
+
 **Anytime later**
 ```
+what are my backlink next_actions today
 list my backlink projects
+show the link_profile for example.com
 show my backlink tracker for example.com
 I got listed on https://somesite.com/our-profile, verify it for example.com and mark it live
 recheck my live links for example.com          ← do this once a month
@@ -434,25 +484,70 @@ list my backlink projects
 
 | Tool | What it does |
 |---|---|
-| `scan_site` | Crawls your live site (follows `robots.txt`, reads `sitemap.xml`). Finds business name, phone, email, address, socials, keywords, page SEO data and broken links. Separates truly broken links from bot-blocked ones (LinkedIn, Instagram…) and flags JavaScript-only pages. |
+| `scan_site` | Crawls the live site, respecting `robots.txt`. Reads sitemaps, including sitemap indexes and `Sitemap:` lines in robots.txt. **Renders JavaScript apps** automatically. Finds business details, page SEO data, broken links, redirects, robots-blocked pages and sitemap health. Separates truly broken links from bot-blocked ones (LinkedIn, Instagram…). |
 | `scan_codebase` | (Pass `site=` to remember the folder for that project.) Reads a local project (Next.js, React/Vite, Django, FastAPI, plain HTML…). Finds routes, meta tags, sitemap/robots, structured data, contact info and which file holds each social link. Flags mixed-case routes (`/About` vs `/about`), inconsistent LinkedIn URLs and missing prerendering. Ignores lockfiles and minified bundles. |
-| `seo_link_audit` | Returns a ranked `priority_fixes` list (most important first): noindex, broken links (with how many pages each is on), missing LocalBusiness schema / street address, JS-only pages, sitemap, canonicals, thin pages, weak internal links. |
+| `seo_link_audit` | A **health score (0–100, A–F)** and a ranked `priority_fixes` list covering: noindex, dead buttons (links with no destination), broken links, JS-only pages, the right schema type (LocalBusiness vs SoftwareApplication), template placeholders (`@yourtwitterhandle`, "Vite + React"), sitemap entries that 404, redirect or are blocked, robots blocks, canonicals, hreflang, http links, one-page sites, duplicate titles/descriptions, thin pages, alt text and subdomain cross-links. |
 | `internal_link_suggestions` | Says exactly where to add in-text links: page, section, paragraph, sentence, anchor text, the sentence with the link already added, and the **file and line** in your code. If no sentence fits, it suggests a new one and where to put it. |
 | `content_plan` | For thin pages: which sections and paragraphs to add, what to write in each, keywords to use naturally, links to include, where to insert them, and which file to edit. |
 | `save_project` | Saves a site (yours or a client's) with its niche, location, country, keywords, competitors and code folder, so every other tool uses them. |
 | `list_projects` | Lists all your sites with niche, location, country, tracker progress and whether a kit is saved. |
-| `find_opportunities` | Lists directories and citation sites for the niche and country, plus ready search queries for roundups, local lists, guest posts, resource pages, podcasts, partners and competitor mentions. Pass `site=` to use a saved project. |
+| `find_opportunities` | Lists directories and citation sites for the niche and country, plus ready search queries for roundups, local lists, guest posts, resource pages, **"competitor alternatives" pages**, **unlinked brand mentions**, podcasts and partners. Pass `site=` to use a saved project. |
 | `add_custom_directory` | Adds your own directory (optionally only for one city). It's saved to `custom.json` and survives updates. |
 | `add_custom_footprint` | Adds your own search query using `{kw}`, `{loc}` and `{country}`. |
-| `qualify_prospect` | Opens a prospect and scores it 0-100. Detects guest-post pages, "top N companies" roundups, resource pages and directories. Judges spam by where the page links out (not by words in it). Follows contact/about pages to find a real email, and returns `recommended_template`. Blocked sites return `check_manually`, not a bad score. |
+| `qualify_prospect` | Opens a prospect and scores it 0-100 (plus authority, if you've added an Open PageRank key). Detects guest-post pages, "top N companies" roundups, resource pages and directories. Judges spam by where the page links out (not by words in it). Follows contact/about pages to find a real email, and returns `recommended_template`. Blocked sites return `check_manually`, not a bad score. |
 | `build_submission_kit` | Builds one consistent Name/Address/Phone + descriptions kit for all directory sign-ups. Rejects placeholder values, never uses your brand name as the category, formats the phone one way, and lists `needs_review`. Saved as `.md` + `.json`. |
-| `generate_schema` | Ready-to-paste `LocalBusiness` JSON-LD (address, phone, email, sameAs, founding date) built from your kit. Lists missing fields instead of inventing them. |
+| `generate_schema` | Ready-to-paste JSON-LD built from your kit: any `LocalBusiness` type, `Organization`, or `SoftwareApplication` with pricing plans (currency set from the country), plus optional FAQ and real ratings. Lists missing fields instead of inventing them. |
 | `draft_outreach` | Writes an email: `guest_post`, `list_inclusion`, `resource_page`, `broken_link`, `unlinked_mention`, `partner`, `testimonial`, `local_press`. Uses your personal `hook` and real `proof`, never claims a relationship you don't have, and returns `warnings` until it's ready to send. Never sends anything. |
-| `verify_backlink` | Checks a page really links to you: anchor text, follow/nofollow/sponsored, and whether that page is indexable. |
+| `verify_backlink` | Checks a page really links to you (rendering JS pages if needed): anchor text, follow/nofollow/sponsored, and whether that page is indexable. Records it in the tracker, and marks it `lost` if it disappears. |
 | `tracker_add` | Adds an opportunity to your tracker. Blocks a second entry for the same directory. |
-| `tracker_update` | Changes status/notes: `todo`, `submitted`, `pitched`, `live`, `rejected`. |
+| `tracker_update` | Changes status or notes (`todo`, `submitted`, `pitched`, `live`, `lost`, `rejected`, `cold`). Records follow-ups and sets reminder dates. |
 | `tracker_list` | Shows your tracker with a summary. |
-| `recheck_live_links` | Re-checks all your live links and flags any that got removed or became nofollow. |
+| `recheck_live_links` | Re-checks all live (and lost) links. Flags removed links, nofollow-only links and links on noindex pages. |
+| `link_profile` | Referring domains, follow/nofollow mix and anchor-text mix, with warnings when it looks unnatural. |
+| `next_actions` | Today's to-do list across all projects: due follow-ups, unstarted opportunities, stale or lost links, missing setup. |
+| `export_report` | A client-ready, self-contained HTML report for a site. |
+| `domain_authority` | Open PageRank authority (0–10) for up to 100 domains. Optional, needs a free key. |
+
+---
+
+## Client reports and daily to-dos
+
+**`export_report`** builds one self-contained HTML page (light and dark mode, phone-friendly) that you
+can email to a client or keep for yourself. It includes the health score and grade, ranked fixes,
+internal links to add (with file/line), pages that need content, where to list the business, the
+backlink tracker with follow-up dates, and the link profile. It's saved to `~/.backlink-mcp/reports/`.
+
+**`next_actions`** is your daily list across all sites: follow-ups that are due, opportunities not
+started, live links not re-checked in 30+ days, lost links to recover, and setup steps still missing.
+
+**Follow-ups are automatic.** `pitched` gets a reminder after 6 days and `submitted` after 14. Record a
+follow-up with `tracker_update followed_up=true`. After two unanswered follow-ups, the entry is marked
+`cold` so you stop chasing it. If a live link disappears, `recheck_live_links` marks it `lost`.
+
+**`link_profile`** shows referring domains, follow vs nofollow, and the anchor-text mix (branded, URL,
+exact-match, partial, generic). It warns when the mix looks unnatural, for example when more than 20%
+of anchors are exact-match keywords.
+
+---
+
+## Optional: domain authority scores
+
+Add a free [Open PageRank](https://www.domcop.com/openpagerank/) key and `qualify_prospect` will
+factor in each prospect's authority (0–10). The `domain_authority` tool also checks up to 100
+domains at once. Add the key to your Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "backlinks": {
+      "command": "/Users/YOU/adys-backlinks-mcp/.venv/bin/backlink-mcp",
+      "env": { "OPENPAGERANK_API_KEY": "your-key" }
+    }
+  }
+}
+```
+
+Without a key, everything else works the same.
 
 ---
 
@@ -467,6 +562,7 @@ Everything stays on your computer in `~/.backlink-mcp/`:
 | `tracker.json` | your opportunities and their status (for all sites) |
 | `submission_kit_<domain>.md` / `.json` | your copy-paste kit |
 | `scans/<domain>.json` | the last scan (used by audit and link suggestions) |
+| `reports/<domain>-<date>.html` | exported client reports |
 | `http_token` | the secret for HTTP mode |
 
 To use a different folder, set the `BACKLINK_MCP_DATA` environment variable.
@@ -546,12 +642,28 @@ Your entries win over built-ins with the same name. To change the built-in lists
 | `find_opportunities` shows only general sites | No country was set, or the niche word wasn't recognised. Run `save_project` with a country and a common niche word (e.g. "dentist"), or add your own with `add_custom_directory`. |
 | `Unknown country` | Use a name or code: `India`/`IN`, `UK`/`GB`, `US`/`USA`, `UAE`/`AE`, `Australia`/`AU`… |
 | Kit says `ready_to_submit: false` | Look at `needs_review`. Usually a missing street address or PIN code. |
+| Scan finds 1 page / almost no words on a React or Vite site | Install [JS rendering](#javascript-sites-react-vite-vue). `scan_site` returns a `render_note` telling you when it's missing. |
+| `JS rendering failed: ... Executable doesn't exist` | Run `~/adys-backlinks-mcp/.venv/bin/python -m playwright install chromium` |
 | `command not found: backlink-mcp` | The venv isn't active. Use the full path: `~/adys-backlinks-mcp/.venv/bin/backlink-mcp` |
 
 **Logs**
 
 - Mac: `tail -50 ~/Library/Logs/Claude/mcp-server-backlinks.log`
 - Windows: `%APPDATA%\Claude\logs\mcp-server-backlinks.log`
+
+---
+
+## Development and tests
+
+```bash
+cd ~/adys-backlinks-mcp
+.venv/bin/pip install -e ".[dev,render]"
+.venv/bin/python -m pytest -q
+```
+
+The tests run against a local fixture website and codebase (`tests/fixture_site`, `tests/fixture_code`),
+so they need no internet. CI runs them on Python 3.10–3.13 with both MCP SDK 1.x and 2.x, on
+Linux, macOS and Windows, plus a job with real JS rendering.
 
 ---
 

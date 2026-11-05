@@ -32,20 +32,31 @@ try:  # mcp >= 2.0
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server
 
-from .countries import COUNTRIES, country_name, format_phone, region_matches, resolve_country
+from . import render as _render
+from . import report as _report
+from .countries import COUNTRIES, CURRENCY, country_name, format_phone, region_matches, resolve_country
 from .data import CATEGORY_HINTS, DIRECTORIES, FOOTPRINTS, NICHE_TAGS, OUTREACH_TEMPLATES
 
-mcp = _Server(
-    "backlink-builder",
+from . import __version__
+
+_SERVER_KW = dict(
+    name="backlink-builder",
     instructions=(
-        "Workflow: scan_site and/or scan_codebase -> seo_link_audit (follow priority_fixes) -> generate_schema -> "
-        "find_opportunities -> build_submission_kit -> qualify_prospect -> tracker_add -> draft_outreach -> "
-        "verify_backlink. Never pass placeholder values (XXXX, 20XX, 'your address'); ask the user instead. "
-        "Only put real, verifiable facts in outreach proof; never claim a past relationship. "
-        "Use your own web search with the footprint queries from find_opportunities to find real "
-        "prospects. Never post links automatically; the human submits/sends."
+        "SEO + white-hat backlink assistant for any business, any country, many sites (one project per site). "
+        "Typical flow: save_project -> scan_site (renders JS apps automatically) -> scan_codebase(site=) -> "
+        "seo_link_audit (follow priority_fixes) -> internal_link_suggestions + content_plan (exact sentence/file/line) "
+        "-> build_submission_kit -> generate_schema -> find_opportunities -> run its search footprints with your web "
+        "search -> qualify_prospect -> tracker_add -> draft_outreach -> verify_backlink -> link_profile; "
+        "next_actions for today's to-dos; export_report for a client-ready HTML report. "
+        "Rules: never pass placeholder values (XXXX, 20XX, 'your address') - ask the user; only real, verifiable facts "
+        "in outreach proof; never claim a relationship that doesn't exist; never post links, submit forms or send "
+        "emails yourself - the human does."
     ),
 )
+try:
+    mcp = _Server(version=__version__, **_SERVER_KW)
+except TypeError:  # mcp 1.x FastMCP has no version argument
+    mcp = _Server(**_SERVER_KW)
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 UA = "BacklinkBuilderMCP/1.0 (+site audit)"
@@ -93,6 +104,23 @@ BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.3
               "Chrome/130.0 Safari/537.36")
 BROWSER_HEADERS = {"User-Agent": BROWSER_UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
                    "Accept-Language": "en;q=0.9,*;q=0.5"}
+
+
+# Framework/template defaults that should never ship: "Vite + React", "React App", "@yourtwitterhandle"...
+DEFAULT_META_RE = re.compile(r"^(vite \+ react( \+ ts)?|react app|create next app|vite app|my app|nuxt app|"
+                             r"angular app|svelte app|home|untitled|document|welcome)$|@your|yourtwitter|yourhandle|"
+                             r"example\.(com|org)|your (site|company|brand|business)|lorem ipsum", re.I)
+_MULTI_SUFFIX = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.nz", "co.in", "org.in",
+                 "net.in", "gov.in", "ac.in", "co.za", "com.sg", "com.my", "co.jp", "com.br", "com.mx", "co.ae"}
+
+
+def _root_domain(url: str) -> str:
+    """docs.4form.example.co.in -> example.co.in (good enough without a public-suffix list)."""
+    host = urlparse(url if "://" in url else "https://" + url).netloc.lower().split(":")[0]
+    parts = host.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _MULTI_SUFFIX:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
 def _clean_emails(emails) -> list[str]:
@@ -250,6 +278,24 @@ def _parse_page(url: str, html: str) -> dict:
                       "rel": " ".join(a.get("rel", [])),
                       "in_content": a.find_parent(["nav", "header", "footer", "aside"]) is None})
     canon = soup.find("link", rel="canonical")
+    # links/buttons that look clickable but go nowhere (e.g. "Book a Demo" with no href)
+    dead_ctas = []
+    for a in soup.find_all("a"):
+        href = (a.get("href") or "").strip()
+        label = " ".join(a.get_text(" ").split())[:60]
+        if label and (not href or href in ("#", "#!") or href.lower().startswith("javascript")) \
+                and not a.get("onclick") and not a.get("data-href"):
+            dead_ctas.append(label)
+    hash_links = sum(1 for a in soup.find_all("a", href=True) if a["href"].strip().startswith("#") and len(a["href"].strip()) > 1)
+    imgs = soup.find_all("img")
+    tw = lambda n: (soup.find("meta", attrs={"name": n}) or soup.find("meta", attrs={"property": n}) or {}).get("content")  # noqa: E731
+    meta_values = {"title": soup.title.string.strip() if soup.title and soup.title.string else None,
+                   "description": meta(name="description"),
+                   **{f"og:{k}": meta(property=f"og:{k}") for k in ("title", "description", "url", "image")},
+                   **{k: tw(k) for k in ("twitter:site", "twitter:creator", "twitter:title")}}
+    placeholders = {k: v for k, v in meta_values.items() if v and (_is_placeholder(v) or DEFAULT_META_RE.search(v))}
+    hreflang = [{"lang": l.get("hreflang"), "href": urljoin(url, l.get("href", ""))}
+                for l in soup.find_all("link", rel="alternate") if l.get("hreflang")]
     return {
         "url": url,
         "title": (soup.title.string.strip() if soup.title and soup.title.string else None),
@@ -272,57 +318,157 @@ def _parse_page(url: str, html: str) -> dict:
         "links": links,
         "text_sample": text[:4000],
         "blocks": blocks,
+        "dead_ctas": dead_ctas[:10],
+        "hash_links": hash_links,
+        "img_total": len(imgs),
+        "img_missing_alt": [urljoin(url, i.get("src", ""))[-80:] for i in imgs if i.get("alt") is None][:10],
+        "meta_placeholders": placeholders,
+        "hreflang": hreflang[:40],
+        "http_links": sorted({l["href"] for l in links if l["href"].startswith("http://")
+                              and _root_domain(l["href"]) == _root_domain(url)})[:10],
+        "twitter": {k: tw(k) for k in ("twitter:card", "twitter:site")},
     }
 
 
 # ----------------------------------------------------------------- crawler
-async def _crawl(start: str, max_pages: int) -> dict:
+async def _sitemap_urls(c: httpx.AsyncClient, start: str, robots_txt: str | None) -> tuple[list[str], list[str]]:
+    """Read sitemap.xml + any 'Sitemap:' lines in robots.txt, following sitemap indexes (2 levels)."""
+    candidates = re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots_txt or "") or [urljoin(start, "/sitemap.xml")]
+    if urljoin(start, "/sitemap.xml") not in candidates:
+        candidates.append(urljoin(start, "/sitemap.xml"))
+    found, sources, seen = [], [], set()
+    queue = [(u, 0) for u in candidates]
+    while queue and len(seen) < 25:
+        u, depth = queue.pop(0)
+        if u in seen:
+            continue
+        seen.add(u)
+        try:
+            r = await c.get(u)
+        except Exception:  # noqa: BLE001
+            continue
+        if r.status_code != 200 or "<" not in r.text[:200]:
+            continue
+        locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", r.text)
+        if not locs:
+            continue
+        sources.append(u)
+        if "<sitemapindex" in r.text[:500].lower() and depth < 2:
+            queue += [(x, depth + 1) for x in locs]
+        else:
+            found += [x.replace("&amp;", "&") for x in locs]
+    return list(dict.fromkeys(found)), sources
+
+
+async def _crawl(start: str, max_pages: int, render: str = "auto") -> dict:
     start = start if "://" in start else "https://" + start
     dom = _domain(start)
     rp = urllib.robotparser.RobotFileParser()
-    pages, broken, queue, seen = {}, [], [_norm(start)], set()
+    pages, broken, queue, seen, blocked, redirects = {}, [], [_norm(start)], set(), [], []
+    render_note, rendered = None, False
     async with httpx.AsyncClient(headers={"User-Agent": UA}, follow_redirects=True, timeout=20) as c:
         try:
             r = await c.get(urljoin(start, "/robots.txt"))
-            rp.parse(r.text.splitlines() if r.status_code == 200 else [])
-            robots_txt = r.text[:2000] if r.status_code == 200 else None
-        except Exception:
+            ok = r.status_code == 200 and "<html" not in r.text[:300].lower()
+            rp.parse(r.text.splitlines() if ok else [])
+            robots_txt = r.text[:3000] if ok else None
+        except Exception:  # noqa: BLE001
             rp.parse([])
             robots_txt = None
-        try:
-            sm = await c.get(urljoin(start, "/sitemap.xml"))
-            sitemap_urls = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", sm.text) if sm.status_code == 200 else []
-        except Exception:
-            sitemap_urls = []
-        for u in sitemap_urls[:max_pages]:
-            if _domain(u) == dom and not u.endswith(".xml"):
+        sitemap_urls, sitemap_sources = await _sitemap_urls(c, start, robots_txt)
+        for u in sitemap_urls[: max_pages * 2]:
+            if _domain(u) == dom:
                 queue.append(_norm(u))
-        while queue and len(pages) < max_pages:
-            batch = []
-            while queue and len(batch) < 5:
-                u = queue.pop(0)
-                if u not in seen and rp.can_fetch(UA, u):
-                    seen.add(u)
-                    batch.append(u)
-            if not batch:
-                continue
+
+        renderer = None  # None = not decided yet, False = unavailable, Renderer = in use
+
+        async def fetch_batch(batch):
+            if renderer:
+                out = []
+                for res in await renderer.fetch_many(batch):
+                    if "error" in res:
+                        out.append(Exception(res["error"]))
+                    else:
+                        out.append(res)
+                return out
             res = await asyncio.gather(*(c.get(u) for u in batch), return_exceptions=True)
-            for u, r in zip(batch, res):
+            out = []
+            for r in res:
                 if isinstance(r, Exception):
-                    broken.append({"url": u, "error": type(r).__name__})
+                    out.append(r)
+                else:
+                    out.append({"url": str(r.url), "status": r.status_code, "html": r.text,
+                                "ctype": r.headers.get("content-type", ""),
+                                "hops": [str(h.url) for h in r.history]})
+            return out
+
+        try:
+            while queue and len(pages) < max_pages:
+                batch = []
+                while queue and len(batch) < 5:
+                    u = queue.pop(0)
+                    if u in seen:
+                        continue
+                    seen.add(u)
+                    if not rp.can_fetch(UA, u) or not rp.can_fetch("Googlebot", u):
+                        blocked.append(u)
+                        continue
+                    batch.append(u)
+                if not batch:
                     continue
-                if r.status_code >= 400:
-                    broken.append({"url": u, "status": r.status_code})
-                    continue
-                if "html" not in r.headers.get("content-type", ""):
-                    continue
-                p = _parse_page(str(r.url), r.text)
-                p["status"] = r.status_code
-                pages[_norm(str(r.url))] = p
-                for l in p["links"]:
-                    if _domain(l["href"]) == dom and l["href"] not in seen and not re.search(
-                        r"\.(pdf|jpg|jpeg|png|gif|webp|svg|zip|mp4|css|js)$", l["href"], re.I):
-                        queue.append(l["href"])
+                for u, res in zip(batch, await fetch_batch(batch)):
+                    if isinstance(res, Exception):
+                        broken.append({"url": u, "error": str(res)[:120] or type(res).__name__})
+                        continue
+                    if res["status"] >= 400:
+                        broken.append({"url": u, "status": res["status"]})
+                        continue
+                    if res.get("ctype") is not None and "html" not in res["ctype"]:
+                        continue
+                    if res.get("hops"):
+                        redirects.append({"from": u, "to": res["url"], "hops": len(res["hops"])})
+                    p = _parse_page(res["url"], res["html"])
+                    p["status"] = res["status"]
+                    p["rendered"] = bool(renderer)
+                    if renderer and render == "auto":
+                        p["client_rendered"] = True  # raw HTML was an empty shell; content only exists after JS runs
+                    # auto: the first page is an empty JS shell -> switch to a real browser and redo it
+                    if render != "never" and renderer is None and (render == "always" or p.get("client_rendered")):
+                        if _render.available():
+                            renderer = await _render.Renderer(BROWSER_UA).__aenter__()
+                            if renderer.ok:
+                                rendered = True
+                                for x in batch:  # redo this whole batch in the browser
+                                    seen.discard(x)
+                                    pages.pop(_norm(x), None)
+                                queue[:0] = batch
+                                break
+                            render_note = f"JS rendering failed: {renderer.error}"
+                        else:
+                            render_note = _render.install_hint()
+                        renderer = renderer if renderer and renderer.ok else False
+                    pages[_norm(res["url"])] = p
+                    for l in p["links"]:
+                        if _domain(l["href"]) == dom and l["href"] not in seen and not re.search(
+                                r"\.(pdf|jpe?g|png|gif|webp|svg|zip|mp4|css|js|xml|txt|ico)$", l["href"], re.I):
+                            queue.append(l["href"])
+        finally:
+            if renderer:
+                await renderer.__aexit__()
+
+        # sitemap health: listed-but-broken, crawled-but-missing, non-canonical / redirected entries
+        crawled = set(pages)
+        sm_set = {_norm(u) for u in sitemap_urls if _domain(u) == dom}
+        broken_set = {b["url"] for b in broken}
+        sitemap_health = {
+            "sources": sitemap_sources,
+            "urls_listed": len(sitemap_urls),
+            "listed_but_broken": sorted(sm_set & broken_set)[:20],
+            "listed_but_redirect": sorted({r["from"] for r in redirects} & sm_set)[:20],
+            "listed_but_blocked_by_robots": sorted(sm_set & set(blocked))[:20],
+            "crawled_but_not_listed": sorted(crawled - sm_set)[:20] if sm_set else [],
+            "other_hosts_listed": sorted({_domain(u) for u in sitemap_urls if _domain(u) != dom})[:5],
+        }
         # check a sample of external links for broken outbound links
         found_on = Counter(l["href"] for p in pages.values() for l in {x["href"]: x for x in p["links"]}.values()
                            if _domain(l["href"]) != dom and l["href"].startswith("http"))
@@ -354,7 +500,9 @@ async def _crawl(start: str, max_pages: int) -> dict:
                 broken_out.append(item)
     return {"domain": dom, "start": start, "pages": pages, "broken_internal": broken,
             "broken_outbound": broken_out, "unverified_outbound": unverified_out, "robots_txt": robots_txt,
-            "sitemap_found": bool(sitemap_urls), "sitemap_count": len(sitemap_urls), "scanned_at": _now()}
+            "sitemap_found": bool(sitemap_urls), "sitemap_count": len(sitemap_urls), "sitemap_health": sitemap_health,
+            "blocked_by_robots": blocked[:30], "redirects": redirects[:30], "rendered_with_browser": rendered,
+            "render_note": render_note, "scanned_at": _now()}
 
 
 def _profile_from_pages(pages: dict, domain: str) -> dict:
@@ -388,11 +536,13 @@ def _profile_from_pages(pages: dict, domain: str) -> dict:
 
 # ----------------------------------------------------------------- tools: scanning
 @mcp.tool()
-async def scan_site(url: str, max_pages: int = 30) -> dict:
-    """Crawl a live website (respects robots.txt, reads sitemap.xml) and return a business profile
-    (name, contact, address, keywords, social profiles), per-page SEO data, broken links and link stats.
-    Results are cached for the other tools."""
-    data = await _crawl(url, max(1, min(max_pages, 200)))
+async def scan_site(url: str, max_pages: int = 30, render: str = "auto") -> dict:
+    """Crawl a live website (respects robots.txt, reads sitemap.xml/sitemap indexes) and return a business profile
+    (name, contact, address, keywords, social profiles), per-page SEO data, broken links, sitemap health, redirects,
+    robots-blocked pages and link stats. Results are cached for the other tools.
+    render: "auto" (default - uses a headless browser only if the site is a JavaScript app like React/Vite),
+    "always", or "never"."""
+    data = await _crawl(url, max(1, min(max_pages, 200)), render if render in ("auto", "always", "never") else "auto")
     profile = _profile_from_pages(data["pages"], data["domain"])
     _save(CACHE / f"{data['domain']}.json", {**data, "profile": profile})
     projects = _projects()
@@ -416,6 +566,11 @@ async def scan_site(url: str, max_pages: int = 30) -> dict:
         "broken_outbound": data["broken_outbound"],
         "unverified_outbound": data.get("unverified_outbound", []),
         "client_rendered_pages": [p["url"] for p in data["pages"].values() if p.get("client_rendered")],
+        "rendered_with_browser": data.get("rendered_with_browser"),
+        "render_note": data.get("render_note"),
+        "sitemap_health": data.get("sitemap_health"),
+        "blocked_by_robots": data.get("blocked_by_robots"),
+        "redirects": data.get("redirects"),
         "top_outbound_domains": ext.most_common(15),
         "profiles_linked_from_site": sorted({d for d in ext if any(s in d for s in (
             "linkedin", "facebook", "instagram", "twitter", "x.com", "youtube", "github", "justdial",
@@ -546,9 +701,11 @@ def scan_codebase(path: str, max_files: int = 3000, site: str = "") -> dict:
 
 @mcp.tool()
 def seo_link_audit(domain: str) -> dict:
-    """Audit the cached scan_site result for problems that waste or block link equity: missing titles/
-    descriptions/canonicals, noindex, thin pages, missing schema/OG, broken links, orphan pages.
-    Run scan_site first."""
+    """Audit the cached scan_site result for problems that waste or block link equity, ranked most important first
+    (priority_fixes) with an overall health_score 0-100. Checks: noindex, broken internal/outbound links, dead buttons
+    (links with no destination), JS-only pages, sitemap/robots health, redirects, canonicals, hreflang, template
+    placeholders left in titles/OG/Twitter tags, http links, one-page sites, schema type, titles/descriptions, thin
+    pages, image alt text, weak internal linking. Run scan_site first."""
     d = _load(CACHE / f"{_domain(domain)}.json", None)
     if not d:
         return {"error": "No scan cached. Run scan_site first."}
@@ -586,6 +743,36 @@ def seo_link_audit(domain: str) -> dict:
     if not (prof.get("phone") and prof.get("address")):
         site_wide.append("Name/Address/Phone not machine-readable - add LocalBusiness schema; NAP must match every citation exactly")
     linkable = sorted(pages.values(), key=lambda p: -p["word_count"])[:5]
+    proj = _project(dom)
+    descs = Counter(p["meta_description"] for p in pages.values() if p["meta_description"])
+    dup_desc = [u for u, p in pages.items() if p["meta_description"] and descs[p["meta_description"]] > 1]
+    dead = {u: p["dead_ctas"] for u, p in pages.items() if p.get("dead_ctas")}
+    placeholders = {u: p["meta_placeholders"] for u, p in pages.items() if p.get("meta_placeholders")}
+    http_links = sorted({h for p in pages.values() for h in p.get("http_links", [])}) if d["start"].startswith("https") else []
+    no_alt = {u: len(p["img_missing_alt"]) for u, p in pages.items() if p.get("img_missing_alt")}
+    canon_off = [u for u, p in pages.items() if p["canonical"] and _norm(urljoin(u, p["canonical"])) != _norm(u)]
+    sh = d.get("sitemap_health") or {}
+    one_page = len(pages) <= 2 and sum(p.get("hash_links", 0) for p in pages.values()) >= 2
+    # hreflang: every alternate should exist and point back; include self and x-default
+    hl_issues = []
+    for u, p in pages.items():
+        langs = {h["lang"].lower(): _norm(h["href"]) for h in p.get("hreflang", []) if h.get("lang")}
+        if not langs:
+            continue
+        if _norm(u) not in langs.values():
+            hl_issues.append(f"{_path(u)}: hreflang set doesn't include the page itself")
+        if "x-default" not in langs:
+            hl_issues.append(f"{_path(u)}: no x-default hreflang")
+        for lang, alt in langs.items():
+            ap = pages.get(alt)
+            if ap is not None and ap.get("hreflang") and _norm(u) not in {_norm(h["href"]) for h in ap["hreflang"]}:
+                hl_issues.append(f"{_path(u)} -> {_path(alt)} ({lang}) isn't linked back")
+    own_subdomains = sorted({_domain(l["href"]) for p in pages.values() for l in p["links"]
+                             if _root_domain(l["href"]) == _root_domain(dom) and _domain(l["href"]) != dom})
+    niche_tags = _niche_tags((proj.get("niche") or "") + " " + " ".join(proj.get("keywords") or []))
+    is_product = (bool(niche_tags & {"saas", "startup", "ai", "dev"}) and "agency" not in niche_tags) or any(
+        re.search(r"pricing|free trial|sign ?up|get started|api|integrations", p["text_sample"], re.I) and
+        re.search(r"/mo|per month|month|plan", p["text_sample"], re.I) for p in pages.values())
 
     # Ranked, de-duplicated fix list: (impact, text). Higher impact first.
     fixes: list[tuple[int, str]] = []
@@ -598,10 +785,53 @@ def seo_link_audit(domain: str) -> dict:
     if d["broken_internal"]:
         fixes.append((85, f"Fix {len(d['broken_internal'])} broken internal link(s): {[x['url'] for x in d['broken_internal'][:5]]}"))
     types = {t for p in pages.values() for t in p["jsonld_types"]}
-    if not any("LocalBusiness" in t or t in ("ProfessionalService", "Store", "Restaurant", "Hotel") for t in types):
+    if is_product:
+        if not any(t in ("SoftwareApplication", "WebApplication", "Product", "MobileApplication") for t in types):
+            fixes.append((78, "No SoftwareApplication schema - run generate_schema with business_type "
+                              "\"SoftwareApplication\" and your plans in offers (shows price/rating in search)"))
+        if not any(t in ("Organization", "Corporation") or "LocalBusiness" in t for t in types):
+            fixes.append((48, "No Organization schema - add one (generate_schema business_type \"Organization\") "
+                              "with logo and sameAs so search engines connect the product to your company"))
+    elif not any("LocalBusiness" in t or t in ("ProfessionalService", "Store", "Restaurant", "Hotel") for t in types):
         fixes.append((80, "No LocalBusiness schema - run generate_schema and paste the output into index.html <head>"
                           + ("" if (prof.get("address") or {}).get("streetAddress") else
                              "; you also need a street address on the site (Google Business Profile & most directories require it)")))
+    if dead:
+        n = sum(len(v) for v in dead.values())
+        fixes.append((88, f"{n} button/link(s) go nowhere (no href or '#'): " +
+                      "; ".join(f"{_path(u)}: {', '.join(v[:4])}" for u, v in list(dead.items())[:4]) +
+                      " - point them at a real page (demo booking, contact)"))
+    if placeholders:
+        fixes.append((72, "Template placeholders left in page tags: " +
+                      "; ".join(f"{_path(u)} {k}={v!r}" for u, ph in list(placeholders.items())[:3] for k, v in list(ph.items())[:3])))
+    if sh.get("listed_but_broken"):
+        fixes.append((68, f"sitemap lists {len(sh['listed_but_broken'])} broken URL(s): {sh['listed_but_broken'][:4]} - remove or fix them"))
+    if sh.get("listed_but_blocked_by_robots"):
+        fixes.append((66, f"sitemap lists URL(s) that robots.txt blocks: {sh['listed_but_blocked_by_robots'][:4]} - pick one"))
+    if d.get("blocked_by_robots"):
+        fixes.append((40, f"robots.txt blocks {len(d['blocked_by_robots'])} linked URL(s): {d['blocked_by_robots'][:4]} - check none are pages you want found"))
+    if sh.get("crawled_but_not_listed"):
+        fixes.append((38, f"{len(sh['crawled_but_not_listed'])} page(s) missing from the sitemap: {sh['crawled_but_not_listed'][:4]}"))
+    if sh.get("listed_but_redirect"):
+        fixes.append((34, f"sitemap lists redirecting URLs - list the final URLs instead: {sh['listed_but_redirect'][:4]}"))
+    if one_page:
+        fixes.append((65, "One-page site: sections are #anchors, so only one URL can rank or be linked to. Create real pages "
+                          "(features, pricing, use cases, comparisons, docs) - see content_plan"))
+    if canon_off:
+        fixes.append((55, f"{len(canon_off)} page(s) have a canonical pointing to a different URL: {canon_off[:4]} - make sure that's intended"))
+    if hl_issues:
+        fixes.append((52, f"hreflang problems ({len(hl_issues)}): " + "; ".join(hl_issues[:4])))
+    if http_links:
+        fixes.append((42, f"Links to your own sites use http:// instead of https://: {http_links[:4]}"))
+    if dup_desc:
+        fixes.append((32, f"{len(dup_desc)} page(s) share the same meta description - make each unique"))
+    if issues.get("duplicate_title"):
+        fixes.append((36, f"{len(issues['duplicate_title'])} page(s) share the same title - make each unique"))
+    if no_alt:
+        fixes.append((18, f"{sum(no_alt.values())} image(s) have no alt text on {len(no_alt)} page(s) - describe them (also helps image search)"))
+    if own_subdomains:
+        fixes.append((25, f"You link to your own subdomains {own_subdomains[:4]} - make sure each links back to this site "
+                          "(brand-name anchor in header/footer) so authority flows both ways"))
     if not prof.get("same_as"):
         fixes.append((50, "No sameAs social links in schema - add your LinkedIn/GitHub/Facebook URLs (generate_schema does this)"))
     spa = [p["url"] for p in pages.values() if p.get("client_rendered")]
@@ -619,13 +849,32 @@ def seo_link_audit(domain: str) -> dict:
         fixes.append((30, "Strengthen internal links to weak pages - see internal_link_suggestions"))
     if issues.get("missing_og_tags"):
         fixes.append((20, f"Add og:title/og:image to {len(issues['missing_og_tags'])} page(s) for better link previews"))
+    # readable lists in messages: paths instead of full URLs
+    def P(urls, n=5):
+        items = [_path(u) if isinstance(u, str) and _domain(u) == dom else u for u in list(urls)[:n]]
+        more = len(list(urls)) - n
+        return ", ".join(str(i) for i in items) + (f" (+{more} more)" if more > 0 else "")
+    fixes = [(i, re.sub(r"\[('[^\]]*')\]", lambda m: P(re.findall(r"'([^']+)'", m.group(1)), 99), t)) for i, t in fixes]
+
+    # health score: start at 100, subtract by severity (capped), so clients see progress as fixes land
+    penalty = sum(14 if i >= 80 else 9 if i >= 60 else 5 if i >= 35 else 2 for i, _ in fixes)
+    score = max(0, round(100 - penalty))
     return {
+        "health_score": score,
+        "grade": "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 40 else "F",
+        "pages_audited": len(pages),
+        "rendered_with_browser": d.get("rendered_with_browser"),
         "priority_fixes": [t for _, t in sorted(fixes, key=lambda x: -x[0])],
         "site_wide": site_wide,
         "page_issues": {k: v[:25] for k, v in issues.items()},
         "broken_internal": d["broken_internal"],
         "broken_outbound": d["broken_outbound"],
         "unverified_outbound": d.get("unverified_outbound", []),
+        "dead_buttons": dead,
+        "template_placeholders": placeholders,
+        "sitemap_health": sh,
+        "redirects": d.get("redirects", []),
+        "hreflang_issues": hl_issues[:20],
         "most_linkable_pages": [{"url": p["url"], "title": p["title"], "words": p["word_count"]} for p in linkable],
         "tip": "Fix noindex/broken/canonical issues before outreach - links to broken or noindexed pages are wasted.",
     }
@@ -994,7 +1243,10 @@ def list_projects() -> dict:
 
 def _niche_tags(niche: str) -> set[str]:
     n = f" {niche.lower()} "
-    return {t for k, ts in NICHE_TAGS.items() if k in n for t in ts}
+    hits = [k for k in NICHE_TAGS if k in n]
+    # the longest match wins: "home builder" (trades) beats "builder" (software), "dental clinic" beats "clinic"
+    hits = [k for k in hits if not any(k != o and k.strip() in o for o in hits)]
+    return {t for k in hits for t in NICHE_TAGS[k]}
 
 
 @mcp.tool()
@@ -1031,14 +1283,24 @@ def find_opportunities(niche: str = "", location: str = "", country: str = "",
     picks = [{k: v for k, v in d.items() if k != "_specific"} | {"why": "niche" if d["_specific"] else "general"} for d in picks]
     cname = country_name(code) if code else ""
     kw = [k for k in keywords if k] or [niche]
+    my_dom = _domain(site) if site else ""
+    brand = pr.get("name") or ""
+    comp_brands = []
+    for c in competitors:
+        stem = _domain(c).split(".")[0]
+        comp_brands.append(stem.replace("-", " ").title() if stem.islower() else stem)
     queries = []
     for group, tmpls in _all_footprints().items():
         for t in tmpls:
-            if ("{loc}" in t and not location) or ("{country}" in t and not cname):
+            if (("{loc}" in t and not location) or ("{country}" in t and not cname)
+                    or ("{comp}" in t and not comp_brands) or (("{brand}" in t or "{domain}" in t) and not (brand and my_dom))):
                 continue
-            for k in (kw[:3] if "{kw}" in t else kw[:1]):
-                q = " ".join(t.format(kw=k, loc=location, country=cname).split())
-                queries.append({"type": group, "query": q})
+            kws_for = kw[:3] if "{kw}" in t else kw[:1]
+            comps_for = comp_brands[:4] if "{comp}" in t else [""]
+            for k in kws_for:
+                for cb in comps_for:
+                    q = " ".join(t.format(kw=k, loc=location, country=cname, comp=cb, brand=brand, domain=my_dom).split())
+                    queries.append({"type": group, "query": q})
     seen, uniq = set(), []
     for q in queries:
         if q["query"].lower() not in seen:
@@ -1056,11 +1318,11 @@ def find_opportunities(niche: str = "", location: str = "", country: str = "",
         notes.append(f"Niche {niche!r} didn't match a known category - showing general directories. "
                      "Try a common word (e.g. 'dentist', 'lawyer', 'software'), or add your own with add_custom_directory.")
     return {
-        "used": {"niche": niche, "location": location, "country": cname or None, "keywords": kw,
+        "used": {"niche": niche, "location": location, "country": cname or None, "keywords": kw, "brand": brand or None,
                  "competitors": competitors, "matched_tags": sorted(tags)},
         "notes": notes,
         "citations_and_directories": picks,
-        "search_footprints": uniq[:70] + comp,
+        "search_footprints": uniq[:90] + comp,
         "how_to_use": [
             "Claim high-priority citations first (Google Business Profile, Bing Places, then niche directories).",
             "Use the exact same Name/Address/Phone everywhere (see build_submission_kit).",
@@ -1194,6 +1456,14 @@ async def qualify_prospect(url: str, my_domain: str = "", topic_keywords: list[s
     score -= 15 if len(ext) > 200 else 0
     if kws and not relevant:
         score -= 15
+    authority = None
+    if os.environ.get(OPR_ENV):
+        try:
+            authority = (await _opr([dom])).get(dom, {}).get("page_rank_0_10")
+        except Exception:  # noqa: BLE001
+            authority = None
+        if authority is not None:
+            score += -10 if authority < 1.5 else 0 if authority < 3 else 5 if authority < 5 else 10
     score = max(0, min(100, score))
 
     if already:
@@ -1214,7 +1484,7 @@ async def qualify_prospect(url: str, my_domain: str = "", topic_keywords: list[s
         "relevant_to_topic": relevant if kws else None, "outbound_links": len(ext), "spam_link_examples": spam_links[:3],
         "word_count": p["word_count"], "contact_emails": emails[:5],
         "contact_pages_checked": contact_pages[:4], "write_for_us_page": write_page,
-        "already_links_to_you": already, "score_0_100": score,
+        "already_links_to_you": already, "score_0_100": score, "authority_0_10": authority,
         "verdict": "skip" if score < 40 else ("good" if score >= 65 else "maybe"),
         "recommended_template": approach[0], "how_to_approach": approach[1],
         "next": "If good: tracker_add, then draft_outreach with recommended_template (unless signup/already_linked).",
@@ -1389,51 +1659,122 @@ def build_submission_kit(domain: str, business_name: str = "", category: str = "
     return kit
 
 
+APP_TYPES = {"SoftwareApplication", "WebApplication", "MobileApplication"}
+
+
 @mcp.tool()
 def generate_schema(domain: str, business_type: str = "ProfessionalService", area_served: str = "",
-                    price_range: str = "") -> dict:
-    """Generate ready-to-paste LocalBusiness JSON-LD (name, address, phone, email, logo, sameAs, foundingDate)
-    from the saved submission kit (or the last scan). Paste the returned script tag into your site's <head>
-    (e.g. index.html). business_type: ProfessionalService, LocalBusiness, Organization, Restaurant,
-    BeautySalon, Hotel, MedicalClinic, Store... Fields still missing are listed, never invented."""
+                    price_range: str = "", app_name: str = "", app_category: str = "BusinessApplication",
+                    operating_system: str = "Web", offers: list[dict] | None = None, currency: str = "",
+                    rating_value: float = 0, rating_count: int = 0, faq: list[dict] | None = None) -> dict:
+    """Generate ready-to-paste JSON-LD from the saved submission kit (or the last scan). Paste the script tag into
+    the site's <head> once, site-wide. Missing fields are listed, never invented.
+    business_type:
+      - local businesses: ProfessionalService, LocalBusiness, Dentist, Physician, LegalService, Attorney,
+        RealEstateAgent, Plumber, Electrician, GeneralContractor, Restaurant, CafeOrCoffeeShop, BeautySalon,
+        HealthClub, Hotel, Store, AutoRepair, AccountingService, EducationalOrganization, NGO...
+      - companies without a public address: Organization
+      - software / SaaS products: SoftwareApplication (or WebApplication / MobileApplication). Also emits an
+        Organization for the company behind it. Pass app_name, app_category (BusinessApplication,
+        DeveloperApplication, ProductivityApplication...), offers=[{"name": "Starter", "price": 999}, ...] and
+        currency (defaults from the project's country).
+    rating_value/rating_count: ONLY real reviews shown on the site - fake ratings get penalised.
+    faq: [{"q": "...", "a": "..."}] - only questions that are visibly answered on the page."""
     dom = _domain(domain)
     kit = _load(DATA_DIR / f"submission_kit_{dom}.json", None)
+    proj = _project(dom)
     if not kit:
         pr = (_load(CACHE / f"{dom}.json", {}) or {}).get("profile", {})
         a = pr.get("address") or {}
-        kit = {"business_name": pr.get("name"), "website": pr.get("website") or f"https://{dom}",
+        kit = {"business_name": proj.get("name") or pr.get("name"), "website": pr.get("website") or f"https://{dom}",
                "phone": pr.get("phone"), "email": pr.get("email"), "street_address": a.get("streetAddress"),
                "city": a.get("addressLocality"), "state": a.get("addressRegion"), "postal_code": a.get("postalCode"),
-               "country": a.get("addressCountry"), "social_profiles": pr.get("same_as") or [], "logo": pr.get("logo"),
-               "descriptions": {"short_160": pr.get("description")}}
+               "country": a.get("addressCountry") or proj.get("country"), "social_profiles": pr.get("same_as") or [],
+               "logo": pr.get("logo"), "descriptions": {"short_160": pr.get("description")}}
     if not kit.get("business_name"):
         return {"error": "No business details yet. Run scan_site or build_submission_kit first."}
-    site = kit.get("website") or f"https://{dom}"
-    schema: dict[str, Any] = {"@context": "https://schema.org", "@type": business_type,
-                              "@id": site.rstrip("/") + "/#business", "name": kit["business_name"], "url": site}
+    site = (kit.get("website") or f"https://{dom}").rstrip("/")
     desc = (kit.get("descriptions") or {}).get("short_160")
-    for k, v in (("description", desc), ("telephone", kit.get("phone_e164") or kit.get("phone")),
-                 ("email", kit.get("email")), ("logo", kit.get("logo")), ("image", kit.get("logo")),
-                 ("foundingDate", kit.get("founded")), ("priceRange", price_range or None)):
+    is_app = business_type in APP_TYPES
+    org_type = "Organization" if is_app else business_type
+    org: dict[str, Any] = {"@type": org_type, "@id": site + ("/#organization" if is_app else "/#business"),
+                           "name": kit["business_name"], "url": site + "/"}
+    for k, v in (("description", None if is_app else desc), ("telephone", kit.get("phone_e164") or kit.get("phone")),
+                 ("email", kit.get("email")), ("logo", kit.get("logo")), ("image", None if is_app else kit.get("logo")),
+                 ("foundingDate", kit.get("founded")), ("priceRange", None if is_app else (price_range or None))):
         if v and not _is_placeholder(v):
-            schema[k] = v
+            org[k] = v
     addr = {k: v for k, v in (("streetAddress", kit.get("street_address")), ("addressLocality", kit.get("city")),
                               ("addressRegion", kit.get("state")), ("postalCode", kit.get("postal_code")),
                               ("addressCountry", resolve_country(kit.get("country")) or kit.get("country")))
             if v and not _is_placeholder(v)}
     if addr:
-        schema["address"] = {"@type": "PostalAddress", **addr}
-    if area_served or kit.get("city"):
-        schema["areaServed"] = area_served or kit.get("country") or kit.get("city")
+        org["address"] = {"@type": "PostalAddress", **addr}
+    if not is_app and (area_served or kit.get("city")):
+        org["areaServed"] = area_served or kit.get("country") or kit.get("city")
     if kit.get("social_profiles"):
-        schema["sameAs"] = kit["social_profiles"]
-    street_label = ("street address (required by Google for LocalBusiness results)"
-                    if business_type not in ("Organization", "Corporation") else "street address")
-    missing = [f for f, ok in ((street_label, "streetAddress" in addr), ("postal code", "postalCode" in addr),
-                               ("phone", "telephone" in schema), ("logo", "logo" in schema),
-                               ("sameAs social links", "sameAs" in schema)) if not ok]
-    tag = '<script type="application/ld+json">\n' + json.dumps(schema, indent=2, ensure_ascii=False) + "\n</script>"
-    return {"script_tag": tag, "missing": missing,
+        org["sameAs"] = kit["social_profiles"]
+
+    graph = [org]
+    missing, warnings = [], []
+    if is_app:
+        cur = (currency or CURRENCY.get(resolve_country(kit.get("country")) or proj.get("country") or "", "")).upper()
+        app: dict[str, Any] = {"@type": business_type, "@id": site + "/#app", "name": app_name or kit["business_name"],
+                               "url": site + "/", "applicationCategory": app_category,
+                               "operatingSystem": operating_system, "publisher": {"@id": org["@id"]}}
+        if desc:
+            app["description"] = desc
+        if kit.get("logo"):
+            app["image"] = kit["logo"]
+        clean_offers = []
+        for o in offers or []:
+            try:
+                price = float(str(o.get("price", "")).replace(",", "").replace("₹", "").replace("$", "").strip())
+            except ValueError:
+                warnings.append(f"Offer {o.get('name')!r} has a non-numeric price - skipped.")
+                continue
+            off = {"@type": "Offer", "price": f"{price:g}", "priceCurrency": (o.get("currency") or cur or "USD").upper()}
+            if o.get("name"):
+                off["name"] = o["name"]
+            if o.get("billing") or o.get("period"):
+                off["priceSpecification"] = {"@type": "UnitPriceSpecification", "price": f"{price:g}",
+                                             "priceCurrency": off["priceCurrency"],
+                                             "unitText": o.get("billing") or o.get("period")}
+            clean_offers.append(off)
+        if clean_offers:
+            app["offers"] = clean_offers[0] if len(clean_offers) == 1 else {
+                "@type": "AggregateOffer", "offerCount": len(clean_offers),
+                "lowPrice": min(float(x["price"]) for x in clean_offers).__format__("g"),
+                "highPrice": max(float(x["price"]) for x in clean_offers).__format__("g"),
+                "priceCurrency": clean_offers[0]["priceCurrency"], "offers": clean_offers}
+        else:
+            missing.append("offers (Google needs a price - use price 0 for a free plan)")
+        if rating_value and rating_count:
+            if not (0 < rating_value <= 5) or rating_count < 1:
+                warnings.append("Rating ignored: rating_value must be 1-5 and rating_count >= 1.")
+            else:
+                app["aggregateRating"] = {"@type": "AggregateRating", "ratingValue": rating_value,
+                                          "ratingCount": int(rating_count), "bestRating": 5}
+                warnings.append("Only keep aggregateRating if these reviews are real and shown on the page.")
+        else:
+            missing.append("aggregateRating (optional - only from real reviews shown on the site, e.g. G2/Capterra)")
+        graph.append(app)
+    else:
+        street_label = ("street address (required by Google for LocalBusiness results)"
+                        if business_type not in ("Organization", "Corporation") else "street address")
+        missing += [f for f, ok in ((street_label, "streetAddress" in addr), ("postal code", "postalCode" in addr),
+                                    ("phone", "telephone" in org)) if not ok]
+    missing += [f for f, ok in (("logo", "logo" in org), ("sameAs social links", "sameAs" in org)) if not ok]
+    if faq:
+        qa = [{"@type": "Question", "name": x.get("q", "").strip(),
+               "acceptedAnswer": {"@type": "Answer", "text": x.get("a", "").strip()}}
+              for x in faq if x.get("q") and x.get("a")]
+        if qa:
+            graph.append({"@type": "FAQPage", "@id": site + "/#faq", "mainEntity": qa})
+            warnings.append("Put the FAQPage block only on the page where these questions are visible.")
+    data = {"@context": "https://schema.org", **graph[0]} if len(graph) == 1 else {"@context": "https://schema.org", "@graph": graph}
+    tag = '<script type="application/ld+json">\n' + json.dumps(data, indent=2, ensure_ascii=False) + "\n</script>"
+    return {"script_tag": tag, "missing": missing, "warnings": warnings,
             "where_to_paste": "Inside <head> of index.html (Vite/static), app/layout.tsx via <script> (Next.js), "
                               "or base.html (Django). Use it once site-wide, not on every component.",
             "validate_at": "https://validator.schema.org/ and https://search.google.com/test/rich-results"}
@@ -1482,49 +1823,103 @@ def draft_outreach(template: str, my_site: str, my_name: str, target_site: str =
 
 
 # ----------------------------------------------------------------- tools: verification & tracking
+FOLLOW_UP_DAYS = {"pitched": 6, "submitted": 14}
+STATUSES = ("todo", "submitted", "pitched", "live", "lost", "rejected", "cold")
+
+
+def _days_from_now(days: int) -> str:
+    return datetime.fromtimestamp(time.time() + days * 86400, timezone.utc).date().isoformat()
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+async def _page_html(url: str) -> tuple[str | None, str, int, dict]:
+    """Fetch a page like a browser; if the links are built by JavaScript, render it. Returns (html, final_url, status, headers)."""
+    async with httpx.AsyncClient(headers=BROWSER_HEADERS, follow_redirects=True, timeout=25) as c:
+        r = await c.get(url)
+    html, final, status, headers = r.text, str(r.url), r.status_code, dict(r.headers)
+    soup = BeautifulSoup(html, "lxml")
+    shell = soup.find(id=re.compile(r"^(root|app|__next|__nuxt|svelte)$")) and len(soup.get_text(" ").split()) < 80
+    if shell and _render.available():
+        async with _render.Renderer(BROWSER_UA) as rd:
+            if rd.ok:
+                res = await rd.fetch(url)
+                if "html" in res:
+                    html, final, status = res["html"], res["url"], res["status"]
+    return html, final, status, headers
+
+
 @mcp.tool()
-async def verify_backlink(source_url: str, target_domain: str) -> dict:
-    """Check whether a page links to your domain: anchor text, rel (nofollow/sponsored/ugc), target URL,
-    and whether the source page is indexable. Updates any matching tracker entry."""
-    async with httpx.AsyncClient(headers={"User-Agent": UA}, follow_redirects=True, timeout=20) as c:
-        try:
-            r = await c.get(source_url)
-        except Exception as e:
-            return {"source": source_url, "live": False, "error": str(e)}
-    soup = BeautifulSoup(r.text, "lxml")
+async def verify_backlink(source_url: str, target_domain: str, tracker_id: int = 0) -> dict:
+    """Check whether a page links to your domain: anchor text, rel (follow/nofollow/sponsored/ugc), target URL, and
+    whether the source page is indexable. Renders JavaScript pages when needed. Updates the matching tracker entry
+    (by URL, or pass tracker_id when your profile URL differs from the tracked one): live -> status 'live';
+    a previously live link that disappeared -> status 'lost'."""
+    try:
+        html, final, status, headers = await _page_html(source_url)
+    except Exception as e:  # noqa: BLE001
+        return {"source": source_url, "live": False, "error": f"{type(e).__name__}: {e}"[:200]}
+    soup = BeautifulSoup(html or "", "lxml")
     td = _domain(target_domain)
-    found = [{"href": a["href"], "anchor": " ".join(a.get_text(" ").split())[:100],
-              "rel": " ".join(a.get("rel", [])) or "follow"}
-             for a in soup.find_all("a", href=True) if _domain(urljoin(str(r.url), a["href"])) == td]
-    robots = (soup.find("meta", attrs={"name": "robots"}) or {}).get("content", "") or ""
-    res = {"source": str(r.url), "status": r.status_code, "live": bool(found), "links": found,
-           "source_noindex": "noindex" in robots.lower() or "noindex" in r.headers.get("x-robots-tag", ""),
+    found = []
+    for a in soup.find_all("a", href=True):
+        full = urljoin(final, a["href"])
+        if _domain(full) == td or _domain(full).endswith("." + td):
+            rel = " ".join(a.get("rel", [])).lower()
+            found.append({"href": full, "anchor": " ".join(a.get_text(" ").split())[:100] or (a.find("img") or {}).get("alt", "[image]"),
+                          "rel": rel or "follow", "follow": not any(x in rel for x in ("nofollow", "sponsored", "ugc"))})
+    robots = ((soup.find("meta", attrs={"name": "robots"}) or {}).get("content", "") or "").lower()
+    res = {"source": final, "status": status, "live": bool(found) and status < 400, "links": found[:10],
+           "any_follow": any(l["follow"] for l in found),
+           "source_noindex": "noindex" in robots or "noindex" in str(headers.get("x-robots-tag", "")).lower(),
            "checked_at": _now()}
+    if res["source_noindex"]:
+        res["note"] = "The page is noindex - the link exists but search engines won't count it."
     tr = _load(TRACKER, [])
+    updated = None
     for e in tr:
-        if _norm(e.get("url", "")) == _norm(source_url):
-            e["last_check"] = res["checked_at"]
-            e["link_live"] = res["live"]
-            if res["live"] and e.get("status") not in ("live",):
+        if (tracker_id and e["id"] == tracker_id) or (not tracker_id and _norm(e.get("url", "")) == _norm(source_url)
+                                                       and _domain(e["site"]) == td):
+            was_live = e.get("status") == "live"
+            e["last_check"], e["link_live"] = res["checked_at"], res["live"]
+            if res["live"]:
+                l0 = next((l for l in found if l["follow"]), found[0])
+                e["link"] = {"anchor": l0["anchor"], "rel": l0["rel"], "follow": l0["follow"], "href": l0["href"],
+                             "source": final, "noindex": res["source_noindex"]}
                 e["status"] = "live"
+                e.setdefault("live_since", _today())
+                e.pop("follow_up_on", None)
+            elif was_live:
+                e["status"] = "lost"
+                e["lost_on"] = _today()
+            e["updated"] = _now()
+            updated = e["id"]
     _save(TRACKER, tr)
+    res["tracker_entry_updated"] = updated
     return res
 
 
 @mcp.tool()
 def tracker_add(url: str, kind: str, site: str, notes: str = "", contact: str = "",
                 status: str = "todo") -> dict:
-    """Add a backlink opportunity to the tracker. kind: citation | directory | guest_post | resource_page |
-    broken_link | mention | partner | press | profile. status: todo | submitted | pitched | live | rejected."""
+    """Add a backlink opportunity to the tracker. kind: citation | directory | guest_post | list_inclusion |
+    resource_page | broken_link | mention | partner | press | profile | launch. status: todo | submitted | pitched |
+    live | lost | rejected | cold. Pitched/submitted entries get an automatic follow-up date."""
     tr = _load(TRACKER, [])
     if any(_norm(e["url"]) == _norm(url) and _domain(e["site"]) == _domain(site) for e in tr):
         return {"ok": False, "msg": "Already tracked."}
     same_site = [e for e in tr if _domain(e["url"]) == _domain(url) and _domain(e["site"]) == _domain(site)]
-    if same_site and kind in ("directory", "citation", "profile"):
+    if same_site and kind in ("directory", "citation", "profile", "launch"):
         return {"ok": False, "msg": f"{_domain(url)} is already tracked as #{same_site[0]['id']} - one profile per "
                                     "directory is enough. Use tracker_update to add a note instead."}
+    if status not in STATUSES:
+        return {"ok": False, "msg": f"status must be one of {STATUSES}"}
     e = {"id": (max([x["id"] for x in tr], default=0) + 1), "url": url, "kind": kind, "site": _domain(site),
-         "status": status, "contact": contact, "notes": notes, "added": _now(), "updated": _now()}
+         "status": status, "contact": contact, "notes": notes, "added": _now(), "updated": _now(), "follow_ups": 0}
+    if status in FOLLOW_UP_DAYS:
+        e["follow_up_on"] = _days_from_now(FOLLOW_UP_DAYS[status])
     tr.append(e)
     _save(TRACKER, tr)
     res = {"ok": True, "entry": e}
@@ -1534,13 +1929,30 @@ def tracker_add(url: str, kind: str, site: str, notes: str = "", contact: str = 
 
 
 @mcp.tool()
-def tracker_update(id: int, status: str = "", notes: str = "", contact: str = "") -> dict:
-    """Update a tracker entry's status/notes/contact by id."""
+def tracker_update(id: int, status: str = "", notes: str = "", contact: str = "", followed_up: bool = False,
+                   follow_up_in_days: int = 0) -> dict:
+    """Update a tracker entry by id: status, notes, contact. followed_up=True records that you sent a follow-up
+    (after 2 unanswered follow-ups the entry is marked 'cold'). follow_up_in_days sets a custom reminder."""
+    if status and status not in STATUSES:
+        return {"ok": False, "msg": f"status must be one of {STATUSES}"}
     tr = _load(TRACKER, [])
     for e in tr:
         if e["id"] == id:
-            if status:
+            if status and status != e["status"]:
                 e["status"] = status
+                if status in FOLLOW_UP_DAYS:
+                    e["follow_up_on"] = _days_from_now(FOLLOW_UP_DAYS[status])
+                else:
+                    e.pop("follow_up_on", None)
+            if followed_up:
+                e["follow_ups"] = e.get("follow_ups", 0) + 1
+                if e["follow_ups"] >= 2 and e["status"] == "pitched":
+                    e["status"] = "cold"
+                    e.pop("follow_up_on", None)
+                else:
+                    e["follow_up_on"] = _days_from_now(7)
+            if follow_up_in_days:
+                e["follow_up_on"] = _days_from_now(follow_up_in_days)
             if notes:
                 e["notes"] = (e.get("notes", "") + " | " + notes).strip(" |")
             if contact:
@@ -1553,7 +1965,7 @@ def tracker_update(id: int, status: str = "", notes: str = "", contact: str = ""
 
 @mcp.tool()
 def tracker_list(site: str = "", status: str = "") -> dict:
-    """List tracked opportunities, optionally filtered by your site and/or status, with a summary."""
+    """List tracked opportunities, optionally filtered by site and/or status, with a summary."""
     tr = [e for e in _load(TRACKER, []) if (not site or e["site"] == _domain(site))
           and (not status or e["status"] == status)]
     return {"summary": dict(Counter(e["status"] for e in tr)), "count": len(tr), "entries": tr,
@@ -1562,12 +1974,190 @@ def tracker_list(site: str = "", status: str = "") -> dict:
 
 @mcp.tool()
 async def recheck_live_links(site: str) -> dict:
-    """Re-verify every 'live' tracker entry for a site and flag links that disappeared or became nofollow."""
-    tr = [e for e in _load(TRACKER, []) if e["site"] == _domain(site) and e["status"] == "live"]
-    results = await asyncio.gather(*(verify_backlink(e["url"], site) for e in tr))
-    lost = [r["source"] for r in results if not r["live"]]
-    return {"checked": len(results), "lost": lost,
-            "nofollow": [r["source"] for r in results if r["live"] and all("nofollow" in l["rel"] for l in r["links"])]}
+    """Re-verify every 'live' (and previously 'lost') tracker entry for a site. Flags links that disappeared
+    (status -> lost), came back, or became nofollow. Run monthly."""
+    tr = [e for e in _load(TRACKER, []) if e["site"] == _domain(site) and e["status"] in ("live", "lost")]
+    results = await asyncio.gather(*(verify_backlink(e.get("link", {}).get("source") or e["url"], site, e["id"])
+                                     for e in tr))
+    return {"checked": len(results),
+            "lost": [r.get("source") for r in results if not r.get("live")],
+            "live": [r["source"] for r in results if r.get("live")],
+            "nofollow_only": [r["source"] for r in results if r.get("live") and not r.get("any_follow")],
+            "noindex_sources": [r["source"] for r in results if r.get("source_noindex")],
+            "next": "For lost links: email the site owner (they're often lost in redesigns) and ask to restore it."}
+
+
+GENERIC_ANCHOR_TEXT = {"click here", "here", "website", "this site", "link", "read more", "visit", "visit website",
+                       "learn more", "more", "this", "homepage", "official website", "site", "[image]"}
+
+
+@mcp.tool()
+def link_profile(site: str) -> dict:
+    """Summarise the live backlinks in the tracker for a site: referring domains, follow vs nofollow, anchor text
+    mix (branded / exact-match keyword / partial / URL / generic / other) and link types - with warnings when the
+    profile looks unnatural (e.g. too many exact-match anchors). Verify links first so anchors are recorded."""
+    dom = _domain(site)
+    proj = _project(dom)
+    live = [e for e in _load(TRACKER, []) if e["site"] == dom and e["status"] == "live"]
+    if not live:
+        return {"site": dom, "live_links": 0, "msg": "No live links yet. When one goes live, run verify_backlink so "
+                                                     "its anchor and follow status are recorded."}
+    brand_full = (proj.get("name") or "").lower().strip()
+    stem = dom.split(".")[0]
+    is_brand = lambda a: bool((brand_full and brand_full in a) or re.search(rf"\b{re.escape(stem)}\b", a))  # noqa: E731
+    kws = [k.lower() for k in (proj.get("keywords") or [])]
+    cats, follow = Counter(), Counter()
+    anchors = Counter()
+    for e in live:
+        l = e.get("link") or {}
+        a = (l.get("anchor") or "").strip().lower()
+        anchors[a or "(unknown)"] += 1
+        follow["follow" if l.get("follow", True) else "nofollow"] += 1
+        if not a:
+            cats["unknown (re-verify)"] += 1
+        elif re.match(r"^(https?://|www\.)", a) or dom in a:
+            cats["url"] += 1
+        elif is_brand(a):
+            cats["branded"] += 1
+        elif a in kws:
+            cats["exact_match"] += 1
+        elif any(k in a or a in k for k in kws):
+            cats["partial_match"] += 1
+        elif a in GENERIC_ANCHOR_TEXT:
+            cats["generic"] += 1
+        else:
+            cats["other"] += 1
+    n = len(live)
+    pct = {k: round(v * 100 / n) for k, v in cats.items()}
+    warnings = []
+    if pct.get("exact_match", 0) > 20:
+        warnings.append(f"{pct['exact_match']}% exact-match anchors - looks unnatural. Ask for branded or URL anchors next.")
+    if n >= 5 and follow["follow"] / n < 0.3:
+        warnings.append("Most links are nofollow - fine for traffic and trust, but add guest posts/lists for followed links.")
+    if n >= 5 and pct.get("branded", 0) + pct.get("url", 0) < 30:
+        warnings.append("Few branded/URL anchors - natural profiles are usually brand-led.")
+    noindex = [e["url"] for e in live if (e.get("link") or {}).get("noindex")]
+    if noindex:
+        warnings.append(f"{len(noindex)} link(s) sit on noindex pages and won't be counted: {noindex[:3]}")
+    return {"site": dom, "live_links": n, "referring_domains": len({_domain((e.get('link') or {}).get('source') or e['url']) for e in live}),
+            "follow": dict(follow), "anchor_mix_percent": pct, "top_anchors": anchors.most_common(10),
+            "by_type": dict(Counter(e["kind"] for e in live)), "warnings": warnings,
+            "healthy_mix_guide": "Roughly: branded + URL 50-70%, partial 10-20%, generic 5-15%, exact-match under 10%."}
+
+
+@mcp.tool()
+def next_actions(site: str = "") -> dict:
+    """Today's to-do list across all your projects (or one site): follow-ups that are due, opportunities waiting to
+    be sent, links to re-verify, and setup steps not done yet (scan, project details, kit, code folder)."""
+    today = _today()
+    tr = _load(TRACKER, [])
+    projects = _projects()
+    sites = [_domain(site)] if site else sorted(set(projects) | {e["site"] for e in tr})
+    out = []
+    for dom in sites:
+        pr = projects.get(dom, {})
+        mine = [e for e in tr if e["site"] == dom]
+        todo = []
+        due = [e for e in mine if e.get("follow_up_on") and e["follow_up_on"] <= today and e["status"] in FOLLOW_UP_DAYS]
+        for e in due:
+            todo.append(f"Follow up #{e['id']} {e['url']} ({e['status']} on {e['updated'][:10]}, "
+                        f"follow-ups sent: {e.get('follow_ups', 0)}) - then tracker_update followed_up=true")
+        waiting = [e for e in mine if e["status"] == "todo"]
+        if waiting:
+            todo.append(f"{len(waiting)} opportunit{'y' if len(waiting) == 1 else 'ies'} not started: "
+                        + ", ".join(f"#{e['id']} {_domain(e['url'])}" for e in waiting[:6]))
+        stale = [e for e in mine if e["status"] == "live" and (e.get("last_check") or "")[:10] <
+                 _days_from_now(-30)]
+        if stale:
+            todo.append(f"Re-check {len(stale)} live link(s) not verified in 30+ days - run recheck_live_links")
+        lost = [e for e in mine if e["status"] == "lost"]
+        if lost:
+            todo.append(f"{len(lost)} lost link(s) - ask the site owners to restore: {[e['url'] for e in lost[:3]]}")
+        setup = []
+        if not (CACHE / f"{dom}.json").exists():
+            setup.append("scan_site")
+        if not pr.get("niche") or not pr.get("country"):
+            setup.append("save_project (niche, country, location, keywords, competitors)")
+        if not (DATA_DIR / f"submission_kit_{dom}.json").exists():
+            setup.append("build_submission_kit")
+        if not pr.get("code_path"):
+            setup.append("scan_codebase with site= (for file/line suggestions)")
+        if setup:
+            todo.append("Setup not done: " + ", ".join(setup))
+        out.append({"site": dom, "summary": dict(Counter(e["status"] for e in mine)), "actions": todo or ["All caught up."]})
+    return {"date": today, "projects": out}
+
+
+@mcp.tool()
+def export_report(site: str, prepared_by: str = "", client_name: str = "") -> dict:
+    """Create a polished, self-contained HTML report for a site - ready to send to a client or keep: health score,
+    ranked fixes, internal links to add (with file/line), pages needing content, directories to list on, the
+    backlink tracker and the link profile. Saved to ~/.backlink-mcp/reports/. Run scan_site first.
+    prepared_by: your/agency name shown on the report (e.g. "BeForth")."""
+    dom = _domain(site)
+    if not (CACHE / f"{dom}.json").exists():
+        return {"ok": False, "msg": "Run scan_site first."}
+    proj = _project(dom)
+    audit = seo_link_audit(dom)
+    opps = find_opportunities(site=dom) if (proj.get("niche") or proj.get("keywords")) else {}
+    data = {
+        "site": dom, "date": _today(), "prepared_by": prepared_by, "client_name": client_name,
+        "project": {**proj, "country": country_name(proj.get("country")) if proj.get("country") else None},
+        "audit": audit,
+        "link_suggestions": [x for x in internal_link_suggestions(dom, 15) if "placement" in x],
+        "content_plan": [x for x in content_plan(dom, max_pages=8) if "page" in x],
+        "directories": (opps or {}).get("citations_and_directories", []),
+        "tracker": [e for e in _load(TRACKER, []) if e["site"] == dom],
+        "link_profile": link_profile(dom),
+    }
+    out_dir = DATA_DIR / "reports"
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / f"{dom}-{data['date']}.html"
+    path.write_text(_report.build(data), "utf-8")
+    return {"ok": True, "file": str(path), "health_score": audit.get("health_score"), "grade": audit.get("grade"),
+            "fixes": len(audit.get("priority_fixes", [])), "live_links": data["link_profile"].get("live_links", 0),
+            "open_it": f"open '{path}'  (Mac)   |   start {path}  (Windows)",
+            "note": None if opps else "Run save_project with niche/country to include the directory list."}
+
+
+# ----------------------------------------------------------------- optional: domain authority (Open PageRank)
+OPR_ENV = "OPENPAGERANK_API_KEY"
+
+
+async def _opr(domains: list[str]) -> dict[str, dict]:
+    key = os.environ.get(OPR_ENV)
+    if not key or not domains:
+        return {}
+    out = {}
+    async with httpx.AsyncClient(timeout=20, headers={"API-OPR": key}) as c:
+        for i in range(0, len(domains), 100):
+            chunk = domains[i:i + 100]
+            r = await c.get("https://openpagerank.com/api/v1.0/getPageRank", params=[("domains[]", d) for d in chunk])
+            if r.status_code != 200:
+                raise RuntimeError(f"Open PageRank returned {r.status_code}: {r.text[:120]}")
+            for item in r.json().get("response", []):
+                if item.get("status_code") == 200:
+                    out[item["domain"]] = {"page_rank_0_10": item.get("page_rank_decimal"),
+                                           "global_rank": item.get("rank")}
+    return out
+
+
+@mcp.tool()
+async def domain_authority(domains: list[str]) -> dict:
+    """Authority score (Open PageRank, 0-10) for up to 100 domains - use it to prioritise prospects.
+    Optional: needs a free API key from https://www.domcop.com/openpagerank/ set as OPENPAGERANK_API_KEY
+    in your MCP config env. qualify_prospect uses it automatically when the key is set."""
+    if not os.environ.get(OPR_ENV):
+        return {"enabled": False, "how_to_enable": f"Get a free key at https://www.domcop.com/openpagerank/ and add "
+                                                    f'"env": {{"{OPR_ENV}": "your-key"}} to the backlinks server in '
+                                                    "your Claude config, then restart Claude."}
+    doms = list(dict.fromkeys(_domain(d) for d in domains if d))[:100]
+    try:
+        data = await _opr(doms)
+    except Exception as e:  # noqa: BLE001
+        return {"enabled": True, "error": str(e)[:200]}
+    return {"enabled": True, "results": [{"domain": d, **data.get(d, {"page_rank_0_10": None})} for d in doms],
+            "guide": "0-2 new/small, 3-4 decent local/niche site, 5-6 strong, 7+ major publication."}
 
 
 def _serve_http(port: int, host: str) -> None:

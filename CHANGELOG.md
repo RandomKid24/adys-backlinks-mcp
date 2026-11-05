@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.0: the full toolkit
+
+### Added
+- **JavaScript rendering.** `scan_site` detects React/Vite/Vue shells and crawls them with a headless browser (optional Playwright extra, `render="auto"|"always"|"never"`). `verify_backlink` also renders JS pages, so links injected by JavaScript are found.
+- **Much deeper audit, with a health score (0–100, A–F).** New checks: dead buttons/links with no destination (e.g. "Book a Demo" with no href), template placeholders left in titles/OG/Twitter tags ("Vite + React", `@yourtwitterhandle`), sitemap health (entries that 404, redirect or are blocked by robots, and pages missing from the sitemap), robots-blocked links, redirects, canonicals pointing elsewhere, hreflang (missing self/x-default/return links), http links to your own sites, one-page sites, duplicate titles/descriptions, missing alt text, subdomain cross-linking, and the right schema type for products vs local businesses.
+- **Sitemap discovery** follows `Sitemap:` lines in robots.txt and sitemap indexes.
+- **SaaS/product schema:** `generate_schema` supports `SoftwareApplication`/`WebApplication`/`MobileApplication` with pricing plans (currency from the country), plus a linked `Organization`, optional `FAQPage` and real ratings.
+- **New opportunity types:** "competitor alternatives" queries (`"Formspree alternatives"`, `best X alternatives`, `X vs`) and unlinked brand mentions (`"Brand" -site:domain`).
+- **About 15 new launch, SaaS, dev and AI directories** (Indie Hackers, Show HN, DevHunt, Uneed, Peerlist, StackShare, SourceForge, Slant, npm, PyPI, Futurepedia, There's An AI For That, Toolify, SoftwareSuggest, Techjockey) and new niches (AI, API/SDK, CMS, no-code, dentist, vet, pharmacy…).
+- `link_profile`: follow/nofollow mix, anchor-text mix (branded / URL / exact / partial / generic) and over-optimisation warnings.
+- `next_actions`: a daily to-do list across all projects.
+- `export_report`: a client-ready, self-contained HTML report (light/dark, mobile-friendly).
+- `domain_authority` and authority-aware `qualify_prospect` via an optional free Open PageRank key.
+- **Tracker:** automatic follow-up dates, a `followed_up` counter (two unanswered follow-ups → `cold`), and `lost` status when a live link disappears; verified anchor/rel details are stored.
+- **Test suite** (29 tests, local fixtures, no internet) and **GitHub Actions CI** on Python 3.10–3.13 × MCP SDK 1.x/2.x, Linux/macOS/Windows, plus a real-browser job.
+- The installers ask whether to add JS rendering (`--render` / `--no-render`).
+
+### Changed
+- Fix messages show short paths instead of full URL lists.
+- Niche matching prefers the longest phrase ("home builder" is trades, "form builder" is software), and agency directories are no longer suggested for SaaS products.
+- Branded-anchor detection uses the full brand name or domain, not word fragments.
+- The server reports its own version (2.0.0) to MCP clients.
+
+
 ## 1.3.0: where to add links and text
 
 ### Added

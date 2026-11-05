@@ -2,6 +2,10 @@
 # One-command installer for macOS / Linux.
 # Creates a virtual env, installs backlink-mcp, and adds it to Claude Desktop.
 set -euo pipefail
+# Options:  --render     also install the headless browser for JavaScript sites (React/Vite/Vue)
+#           --no-render  skip it without asking
+RENDER=""
+for a in "$@"; do case "$a" in --render) RENDER=yes ;; --no-render) RENDER=no ;; esac; done
 
 cd "$(dirname "$0")"
 DIR="$(pwd)"
@@ -33,6 +37,15 @@ fi
 say "Installing backlink-mcp and dependencies"
 .venv/bin/python -m pip install -q --upgrade pip
 .venv/bin/python -m pip install -q -e .
+if [ -z "$RENDER" ] && [ -t 0 ]; then
+  read -r -p "Install JS rendering for React/Vite/Vue sites? Downloads ~150 MB browser. [y/N] " ans
+  case "$ans" in [yY]*) RENDER=yes ;; *) RENDER=no ;; esac
+fi
+if [ "$RENDER" = "yes" ]; then
+  say "Installing JS rendering (Playwright + Chromium)"
+  .venv/bin/python -m pip install -q -e ".[render]"
+  .venv/bin/python -m playwright install chromium || warn "Chromium download failed - run later: .venv/bin/python -m playwright install chromium"
+fi
 BIN="$DIR/.venv/bin/backlink-mcp"
 [ -x "$BIN" ] || die "Install failed: $BIN not found"
 say "Installed: $BIN"

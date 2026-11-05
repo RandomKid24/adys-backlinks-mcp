@@ -1,5 +1,6 @@
 # One-command installer for Windows (PowerShell).
 # Run:  powershell -ExecutionPolicy Bypass -File install.ps1
+param([switch]$Render, [switch]$NoRender)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 $Dir = (Get-Location).Path
@@ -26,6 +27,15 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 Say "Installing backlink-mcp and dependencies"
 & .venv\Scripts\python.exe -m pip install -q --upgrade pip
 & .venv\Scripts\python.exe -m pip install -q -e .
+if (-not $Render -and -not $NoRender) {
+    $ans = Read-Host "Install JS rendering for React/Vite/Vue sites? Downloads ~150 MB browser. [y/N]"
+    if ($ans -match '^[yY]') { $Render = $true }
+}
+if ($Render) {
+    Say "Installing JS rendering (Playwright + Chromium)"
+    & .venv\Scripts\python.exe -m pip install -q -e ".[render]"
+    & .venv\Scripts\python.exe -m playwright install chromium
+}
 $Bin = Join-Path $Dir ".venv\Scripts\backlink-mcp.exe"
 if (-not (Test-Path $Bin)) { Fail "Install failed: $Bin not found" }
 Say "Installed: $Bin"
